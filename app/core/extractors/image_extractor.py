@@ -67,27 +67,32 @@ class ImageExtractor:
             mode = "all"
         } = opts || {};
 
-        // ===== 1. 确定根元素 =====
-        // 🔧 修复：优先使用传入的元素（this），避免 containerSelector 重新定位到错误元素
-        let root;
-        if (this && this.nodeType === 1) {
-            // 传入了有效的 DOM 元素，直接使用
-            root = this;
-        } else if (containerSelector) {
-            // 回退：使用 containerSelector 查找
-            root = document.querySelector(containerSelector);
+        // ===== 1. 查找图片节点 =====
+        // 当提供 containerSelector 时，在整个文档中搜索，避免被单个 element 限制范围
+        let nodes;
+        if (containerSelector) {
+            const containerNodes = Array.from(document.querySelectorAll(containerSelector));
+            if (containerNodes.length > 0) {
+                const firstTag = (containerNodes[0].tagName || '').toUpperCase();
+                if (firstTag === 'IMG') {
+                    // containerSelector 直接选中了 img 元素，直接作为 nodes 使用
+                    nodes = containerNodes;
+                } else {
+                    // containerSelector 选中了容器，在每个容器内查找 selector
+                    nodes = [];
+                    for (const c of containerNodes) {
+                        nodes = nodes.concat(Array.from(c.querySelectorAll(selector)));
+                    }
+                }
+            } else {
+                nodes = [];
+            }
         } else {
-            // 最终回退：使用 document
-            root = document;
+            // 无 containerSelector：使用传入的元素（this）或 document
+            const root = (this && this.nodeType === 1) ? this : document;
+            nodes = Array.from(root.querySelectorAll(selector));
         }
 
-        if (!root) {
-            return { images: [], warnings: ["container_not_found"] };
-        }
-
-        // ===== 2. 查找所有图片元素 =====
-        const nodes = Array.from(root.querySelectorAll(selector));
-        
         if (nodes.length === 0) {
             return { images: [], warnings: [] };
         }

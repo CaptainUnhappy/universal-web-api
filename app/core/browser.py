@@ -797,19 +797,21 @@ class BrowserCore:
                         logger.debug(f"[PROBE] 即将发送图片（Markdown），数量={len(images)}")
 
                         try:
-                            first_url = (images[0].get("url") or "").strip() if images else ""
-                            if first_url:
-                                public_base = os.getenv("PUBLIC_BASE_URL", "").strip()
-                                if public_base:
-                                    md_url = public_base.rstrip("/") + first_url
-                                else:
-                                    md_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}{first_url}"
-
-                                md = f"\n\n![image]({md_url})\n\n"
+                            public_base = os.getenv("PUBLIC_BASE_URL", "").strip()
+                            base = public_base.rstrip("/") if public_base else f"http://{AppConfig.get_host()}:{AppConfig.get_port()}"
+                            md_parts = []
+                            for img in images:
+                                img_url = (img.get("url") or "").strip()
+                                if img_url:
+                                    md_url = base + img_url
+                                    md_parts.append(f"![image]({md_url})")
+                                    logger.debug(f"[MD_IMAGE] 图片链接: {md_url}")
+                            if md_parts:
+                                md = "\n\n" + "\n\n".join(md_parts) + "\n\n"
                                 yield self.formatter.pack_chunk(md, completion_id=executor._completion_id)
-                                logger.debug(f"[MD_IMAGE] 已发送 Markdown 图片链接: {md_url}")
+                                logger.debug(f"[MD_IMAGE] 已发送 {len(md_parts)} 张图片链接")
                             else:
-                                logger.warning("[MD_IMAGE] images[0].url 为空，跳过 Markdown 输出")
+                                logger.warning("[MD_IMAGE] 所有图片 url 为空，跳过 Markdown 输出")
                         except Exception as e:
                             logger.warning(f"[MD_IMAGE] 发送 Markdown 图片链接失败: {e}")            
                 except Exception as e:
@@ -879,7 +881,7 @@ class BrowserCore:
     def _try_screenshot_images_to_local(self, tab, last_element, images: List[Dict], image_config: Dict = None) -> List[Dict]:
         """
         优先下载图片（更精准），下载失败才截图。
-        基于实测 API：img_ele.attr('src'), page.cookies(), get_screenshot(path)
+        对所有 http(s) 图片逐一处理，而不是只处理第一张。
         """
         from pathlib import Path
         import time as time_module
@@ -889,84 +891,66 @@ class BrowserCore:
         if not images:
             return images
 
-        img0 = images[0]
-        url0 = (img0.get("url") or "").strip()
+        image_config = image_config or {}
 
-        # 仅当是 http(s) 外链时才处理
-        if not (url0.startswith("http://") or url0.startswith("https://")):
+        # 筛选出需要处理的 http(s) 图片（按原始索引）
+        http_image_indices = [
+            i for i, img in enumerate(images)
+            if img.get("kind") == "url" and (img.get("url") or "").startswith(("http://", "https://"))
+        ]
+        if not http_image_indices:
             return images
 
-        # 准备目录与文件名
         out_dir = Path("download_images")
         out_dir.mkdir(exist_ok=True)
-        filename = f"{int(time_module.time())}_{uuid.uuid4().hex[:8]}.png"
-        out_path = out_dir / filename
 
-        # 从站点配置获取图片选择器
-        image_config = image_config or {}
-        selector = image_config.get("selector", "img")
-
-        # ===== 1. 定位图片元素 =====
+        # 获取 cookies（一次性，供所有图片复用）
+        cookies_dict = {}
         try:
-            if selector and selector != "img":
-                img_eles = tab.eles(f"css:{selector}", timeout=0.5)
-                logger.debug(f"图片定位：使用 '{selector}'，找到 {len(img_eles) if img_eles else 0} 个")
-            else:
-                img_eles = last_element.eles("css:img", timeout=0.5)
-                logger.debug(f"图片定位：使用默认选择器，找到 {len(img_eles) if img_eles else 0} 个")
+            cookies_list = tab.cookies()
+            if cookies_list:
+                for c in cookies_list:
+                    if isinstance(c, dict) and 'name' in c and 'value' in c:
+                        cookies_dict[c['name']] = c['value']
+        except Exception:
+            pass
 
-            if not img_eles:
-                logger.warning(f"图片定位：未找到元素 (selector: {selector})")
-                return images
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': tab.url,
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        }
 
-            img_ele = img_eles[-1]
+        # 预先定位页面上的图片元素（供截图回退用）
+        img_eles = []
+        try:
+            container_sel = image_config.get("container_selector")
+            img_sel = image_config.get("selector", "img")
+            eles_selector = container_sel if container_sel else f"css:{img_sel}"
+            img_eles = tab.eles(eles_selector, timeout=0.5) or []
+            logger.debug(f"图片定位：找到 {len(img_eles)} 个元素")
         except Exception as e:
-            logger.warning(f"图片定位失败: {e}")
-            return images
+            logger.debug(f"图片元素定位失败（截图回退不可用）: {e}")
 
-        saved = False
+        result_images = list(images)
 
-        # ===== 2. 优先下载图片（精准且小文件）=====
-        try:
-            # 获取图片 URL（实测：attr 和 link 都可用）
-            img_src = img_ele.attr('src') or img_ele.link
+        for idx in http_image_indices:
+            img = images[idx]
+            url = img["url"].strip()
+            filename = f"{int(time_module.time())}_{uuid.uuid4().hex[:8]}.png"
+            out_path = out_dir / filename
+            saved = False
 
-            if img_src and img_src.startswith('http'):
-                logger.debug(f"尝试下载: {img_src[:80]}...")
-
-                # 获取 cookies（实测：返回字典列表）
-                cookies_dict = {}
-                try:
-                    cookies_list = tab.cookies()
-                    if cookies_list:
-                        for c in cookies_list:
-                            if isinstance(c, dict) and 'name' in c and 'value' in c:
-                                cookies_dict[c['name']] = c['value']
-                except:
-                    pass
-
-                # 下载图片
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': tab.url,
-                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                }
-
-                response = requests.get(
-                    img_src,
-                    cookies=cookies_dict,
-                    headers=headers,
-                    timeout=15,
-                    allow_redirects=True
-                )
+            # ===== 1. 优先下载（精准且小文件）=====
+            try:
+                logger.debug(f"[{idx+1}/{len(images)}] 尝试下载: {url[:80]}...")
+                response = requests.get(url, cookies=cookies_dict, headers=headers, timeout=15, allow_redirects=True)
 
                 if response.status_code == 200:
                     content = response.content
                     content_type = response.headers.get('Content-Type', '')
 
-                    # 检查是否是有效图片
                     if len(content) > 1000 and 'image' in content_type:
-                        # 根据 Content-Type 调整扩展名
                         if 'jpeg' in content_type or 'jpg' in content_type:
                             filename = filename.replace('.png', '.jpg')
                             out_path = out_dir / filename
@@ -982,38 +966,33 @@ class BrowserCore:
                 else:
                     logger.debug(f"下载失败: HTTP {response.status_code}")
 
-        except Exception as e:
-            logger.debug(f"下载异常，将尝试截图: {str(e)[:100]}")
-
-        # ===== 3. 回退到截图（文件更大但稳定）=====
-        if not saved:
-            logger.debug("回退到截图方式")
-            try:
-                # 实测：get_screenshot(path) 返回路径字符串
-                result = img_ele.get_screenshot(str(out_path))
-                if out_path.exists() and out_path.stat().st_size > 0:
-                    saved = True
-                    logger.debug(f"✅ 截图成功: {filename} ({out_path.stat().st_size} bytes)")
             except Exception as e:
-                logger.warning(f"截图失败: {e}")
+                logger.debug(f"下载异常，将尝试截图: {str(e)[:100]}")
 
-        if not saved:
-            logger.warning("图片保存失败：下载和截图均失败")
-            return images
+            # ===== 2. 回退到截图（文件更大但稳定）=====
+            if not saved and img_eles:
+                try:
+                    img_ele = img_eles[idx] if idx < len(img_eles) else img_eles[-1]
+                    img_ele.get_screenshot(str(out_path))
+                    if out_path.exists() and out_path.stat().st_size > 0:
+                        saved = True
+                        logger.debug(f"✅ 截图成功: {filename} ({out_path.stat().st_size} bytes)")
+                except Exception as e:
+                    logger.warning(f"截图失败: {e}")
 
-        local_url = f"/download_images/{filename}"
+            if saved:
+                new_img = dict(img)
+                new_img["kind"] = "url"
+                new_img["url"] = f"/download_images/{filename}"
+                new_img["source"] = "local_file"
+                new_img["local_path"] = str(out_path)
+                new_img["byte_size"] = out_path.stat().st_size if out_path.exists() else 0
+                result_images[idx] = new_img
+                logger.debug(f"✅ 图片 [{idx+1}] 已保存: /download_images/{filename}")
+            else:
+                logger.warning(f"图片 [{idx+1}] 保存失败：下载和截图均失败，保留原 URL")
 
-        # 覆写第 1 张图片为本地 URL
-        new0 = dict(img0)
-        new0["kind"] = "url"
-        new0["url"] = local_url
-        new0["source"] = "local_file"
-        new0["local_path"] = str(out_path)
-        new0["byte_size"] = out_path.stat().st_size
-
-        new_images = [new0] + images[1:]
-        logger.debug(f"✅ 图片已保存: {local_url} ({new0['byte_size']} bytes)")
-        return new_images
+        return result_images
     
     def _execute_workflow_non_stream(
         self, 
