@@ -270,13 +270,14 @@ def main():
     print("   Universal Web-API  定时批量图片请求工具")
     print("=" * 54)
 
-    prompt = load_prompt()
-    print(f"[提示词] 已加载 prompt.md（{len(prompt)} 字符）")
-
     # 步骤 1：设置间隔（全局，只问一次）
     interval = ask_interval()
 
     while True:
+        # 每轮重新读取 prompt.md，支持 stop 后修改提示词立即生效
+        prompt = load_prompt()
+        print(f"[提示词] 已加载 prompt.md（{len(prompt)} 字符）")
+
         # 步骤 2：选择图片
         image = ask_image()
         if image is None:
