@@ -639,9 +639,79 @@
           "threshold": 50000,
           "hint_text": "完全专注于文件内容"
         }
+      },
+      "图片提取": {
+        "selectors": {
+          "input_box": "textarea[data-testid=\"chat_input_input\"]",
+          "send_btn": "button[data-testid=\"chat_input_send_button\"]",
+          "result_container": "[data-testid=\"message_content\"]",
+          "new_chat_btn": "[data-testid=\"create_conversation_button\"]",
+          "image_wrapper": "[data-testid=\"message_image_content\"]"
+        },
+        "workflow": [
+          {
+            "action": "CLICK",
+            "target": "new_chat_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "WAIT",
+            "target": "",
+            "optional": false,
+            "value": "0.5"
+          },
+          {
+            "action": "FILL_INPUT",
+            "target": "input_box",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "send_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "KEY_PRESS",
+            "target": "Enter",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "STREAM_WAIT",
+            "target": "result_container",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "STREAM_WAIT",
+            "target": "image_wrapper",
+            "optional": true,
+            "value": null
+          }
+        ],
+        "stealth": false,
+        "image_extraction": {
+          "enabled": true,
+          "selector": "img",
+          "container_selector": ".image-box-grid-EYaIcP img.image-Q7dBqW",
+          "debounce_seconds": 5,
+          "wait_for_load": true,
+          "load_timeout_seconds": 60,
+          "download_blobs": true,
+          "max_size_mb": 10,
+          "mode": "all"
+        },
+        "file_paste": {
+          "enabled": true,
+          "threshold": 50000,
+          "hint_text": "完全专注于文件内容"
+        }
       }
     },
-    "default_preset": "主预设"
+    "default_preset": "图片提取"
   },
   "h2ogpte.genai.h2o.ai": {
     "presets": {
