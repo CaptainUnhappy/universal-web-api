@@ -122,10 +122,10 @@ def ask_interval() -> int:
 
 # ================= 步骤 2：选择图片 =================
 
-def ask_image() -> Path | None:
+def ask_images() -> list[Path] | None:
     """
-    让用户选择图片。
-    返回 Path → 继续执行；返回 None → 用户输入 q 退出程序
+    让用户选择一张或多张图片（逗号/空格分隔多个编号）。
+    返回 Path 列表 → 继续执行；返回 None → 用户输入 q 退出程序
     """
     files = list_images()
     has_clip = has_clipboard_image()
@@ -144,8 +144,9 @@ def ask_image() -> Path | None:
 
     print("-" * 54)
     if has_clip:
-        print("   c  使用剪切板图片")
-    print("   q  退出程序")
+        print("   c       使用剪切板图片")
+    print("   1 2 3   多选（空格或逗号分隔），轮询提交")
+    print("   q       退出程序")
     print("=" * 54)
 
     while True:
@@ -157,14 +158,28 @@ def ask_image() -> Path | None:
         if choice == "c":
             img = grab_clipboard_image()
             if img:
-                return img
+                return [img]
             continue
 
-        if choice.isdigit():
-            idx = int(choice)
-            if 1 <= idx <= len(files):
-                print(f"  → 已选择: {files[idx - 1].name}")
-                return files[idx - 1]
+        # 解析多个编号（支持空格、逗号、中文逗号）
+        tokens = [t for t in choice.replace("，", ",").replace(",", " ").split()]
+        if tokens and all(t.isdigit() for t in tokens):
+            selected = []
+            invalid = []
+            for t in tokens:
+                idx = int(t)
+                if 1 <= idx <= len(files):
+                    p = files[idx - 1]
+                    if p not in selected:
+                        selected.append(p)
+                else:
+                    invalid.append(t)
+            if invalid:
+                print(f"  [提示] 编号 {' '.join(invalid)} 不存在，请重新输入")
+                continue
+            if selected:
+                print(f"  → 已选择 {len(selected)} 张: {', '.join(p.name for p in selected)}")
+                return selected
 
         hint = f"1-{len(files)}、" if files else ""
         clip_hint = "c、" if has_clip else ""
@@ -216,23 +231,28 @@ def send_request(image_path: Path, prompt: str, counter: int) -> None:
 
 class SubmitLoop:
     """
-    在后台线程中按固定间隔重复提交同一张图片。
+    在后台线程中按固定间隔轮询提交多张图片，每张独立提交。
     主线程通过 stop_event 通知停止。
     """
 
-    def __init__(self, image: Path, prompt: str, interval_minutes: int):
-        self.image    = image
-        self.prompt   = prompt
+    def __init__(self, images: list[Path], interval_minutes: int):
+        self.images   = images
         self.interval = interval_minutes
         self.stop_event = threading.Event()
         self._thread  = None
-        self._counter = 0
+        self._counter = 0        # 总提交次数
+        self._img_idx = 0        # 当前轮到第几张
+
+    def _next_image(self) -> Path:
+        img = self.images[self._img_idx % len(self.images)]
+        self._img_idx += 1
+        return img
 
     def _run(self):
         # 立即执行第一次
         self._counter += 1
         try:
-            send_request(self.image, self.prompt, self._counter)
+            send_request(self._next_image(), load_prompt(), self._counter)
         except Exception as e:
             print(f"[错误] 意外异常: {e}，等待下次重试")
         self._print_next_time()
@@ -240,7 +260,7 @@ class SubmitLoop:
         while not self.stop_event.wait(timeout=self.interval * 60):
             self._counter += 1
             try:
-                send_request(self.image, self.prompt, self._counter)
+                send_request(self._next_image(), load_prompt(), self._counter)
             except Exception as e:
                 print(f"[错误] 意外异常: {e}，等待下次重试")
             if not self.stop_event.is_set():
@@ -250,8 +270,9 @@ class SubmitLoop:
 
     def _print_next_time(self):
         next_t = datetime.now() + timedelta(minutes=self.interval)
+        next_img = self.images[self._img_idx % len(self.images)].name
         print(f"[循环] 下次提交: {next_t.strftime('%H:%M:%S')}  "
-              f"（每 {self.interval} 分钟）  输入 stop 切换产品图片")
+              f"下一张: {next_img}  输入 stop 切换产品图片")
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -274,22 +295,20 @@ def main():
     interval = ask_interval()
 
     while True:
-        # 每轮重新读取 prompt.md，支持 stop 后修改提示词立即生效
-        prompt = load_prompt()
-        print(f"[提示词] 已加载 prompt.md（{len(prompt)} 字符）")
-
-        # 步骤 2：选择图片
-        image = ask_image()
-        if image is None:
+            # 步骤 2：选择图片
+        images = ask_images()
+        if images is None:
             print("\n[退出] 程序结束")
             break
 
         # 启动定时循环
-        print(f"\n[开始] 图片: {image.name}，间隔: {interval} 分钟")
+        names = ", ".join(p.name for p in images)
+        print(f"\n[开始] 共 {len(images)} 张图片轮询: {names}")
+        print(f"       间隔: {interval} 分钟，每次提交一张")
         print("       运行中输入 stop 停止当前产品，选择新图片")
         print("       关闭窗口 / Ctrl+C 完全退出\n")
 
-        loop = SubmitLoop(image, prompt, interval)
+        loop = SubmitLoop(images, interval)
         loop.start()
 
         # 主线程等待用户输入 stop

@@ -646,7 +646,9 @@
           "send_btn": "button[data-testid=\"chat_input_send_button\"]",
           "result_container": "[data-testid=\"message_content\"]",
           "new_chat_btn": "[data-testid=\"create_conversation_button\"]",
-          "image_wrapper": "[data-testid=\"message_image_content\"]"
+          "image_wrapper": "[data-testid=\"message_image_content\"]",
+          "thinking-action-button": "[data-testid=\"deep-thinking-action-button\"]",
+          "thinking-mode": "[data-testid=\"deep-thinking-action-item-1\"]"
         },
         "workflow": [
           {
@@ -658,8 +660,20 @@
           {
             "action": "WAIT",
             "target": "",
-            "optional": false,
+            "optional": true,
             "value": "0.5"
+          },
+          {
+            "action": "CLICK",
+            "target": "thinking-action-button",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "thinking-mode",
+            "optional": true,
+            "value": null
           },
           {
             "action": "FILL_INPUT",
