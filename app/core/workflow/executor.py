@@ -1216,10 +1216,23 @@ class WorkflowExecutor:
         return (function() {{
             try {{
                 const sendSelector = {selector_json};
-                const root =
-                    document.querySelector('.message-input-wrapper, .message-input-container, .chat-layout-input-container')
-                    || document.querySelector('#dropzone-container')
-                    || document.body;
+                const root = document.querySelector(
+                    '.message-input-wrapper, .message-input-container, .chat-layout-input-container, '
+                    + '#dropzone-container, form:has(button[type="submit"]), '
+                    + '[class*="message-input"], [class*="input-container"], [class*="input-wrapper"]'
+                );
+                if (!root) {{
+                    return {{
+                        ok: true,
+                        attachmentCount: 0,
+                        pendingCount: 0,
+                        pendingText: false,
+                        sendFound: false,
+                        sendDisabled: false,
+                        ready: true,
+                        skipped: 'no_input_root'
+                    }};
+                }}
 
                 const attachmentSelectors = [
                     '.file-card-list',
@@ -1227,11 +1240,10 @@ class WorkflowExecutor:
                     '.fileitem-file-name',
                     '.fileitem-file-name-text',
                     '.message-input-column-file',
-                    '[class*="attach"]',
-                    '[class*="upload"]',
                     '[class*="fileitem"]',
                     '[class*="image-preview"]',
-                    '[data-testid*="upload"]',
+                    '[data-testid*="attachment"]',
+                    '[data-testid*="preview"]',
                     'img[src^="blob:"]',
                     'img[src^="data:image"]'
                 ].join(',');
@@ -1241,10 +1253,7 @@ class WorkflowExecutor:
                     '[role="progressbar"]',
                     '[aria-busy="true"]',
                     '[class*="uploading"]',
-                    '[class*="pending"]',
-                    '[class*="progress"]',
-                    '[class*="spinner"]',
-                    '[class*="loading"]'
+                    '[class*="pending"]'
                 ].join(',');
 
                 const attachmentCount = root.querySelectorAll(attachmentSelectors).length;
@@ -1305,6 +1314,9 @@ class WorkflowExecutor:
 
     def _wait_for_attachments_ready_before_send(self, send_selector: str = ""):
         """Wait for file/image uploads to settle before attempting submit."""
+        if not self._should_wait_for_attachments_before_send():
+            return
+
         max_wait = getattr(BrowserConstants, "ATTACHMENT_READY_MAX_WAIT", 20.0)
         check_interval = getattr(BrowserConstants, "ATTACHMENT_READY_CHECK_INTERVAL", 0.35)
 
@@ -1342,6 +1354,23 @@ class WorkflowExecutor:
             f"pending={state.get('pendingCount', 0)}, "
             f"send_disabled={state.get('sendDisabled', False)})"
         )
+
+    def _should_wait_for_attachments_before_send(self) -> bool:
+        """Only wait when this request actually attached files or images."""
+        try:
+            if self._text_handler.has_recent_attachment_upload():
+                return True
+        except Exception:
+            pass
+
+        try:
+            if self._image_handler.has_recent_attachment_upload():
+                return True
+        except Exception:
+            pass
+
+        context = getattr(self, "_context", None) or {}
+        return bool(context.get("images"))
 
     def _execute_click_send_reliably(self, selector: str, target_key: str, optional: bool):
         """

@@ -48,6 +48,12 @@ class TextInputHandler:
         self._check_cancelled = check_cancelled_fn
         self._file_paste_config = file_paste_config or {}
         self._selectors = selectors or {}
+        self._recent_file_upload_at = 0.0
+
+    def has_recent_attachment_upload(self, window: float = 45.0) -> bool:
+        """Whether this request recently attached a file via file-paste/upload."""
+        ts = float(getattr(self, "_recent_file_upload_at", 0.0) or 0.0)
+        return ts > 0 and (time.time() - ts) <= window
     
     # ================= 工具方法 =================
     
@@ -1182,6 +1188,7 @@ class TextInputHandler:
         )
         
         clipboard_lock = get_clipboard_lock()
+        self._recent_file_upload_at = 0.0
         
         try:
             # 1. 聚焦输入框
@@ -1237,6 +1244,7 @@ class TextInputHandler:
             if not self._wait_for_upload_signal(filepath):
                 logger.warning("[FILE_PASTE] 文件上传未生效，放弃文件粘贴模式")
                 return False
+            self._recent_file_upload_at = time.time()
             
             # 7. 追加引导文本（确保输入框有文字内容，否则某些网站无法发送）
             hint_text = self._file_paste_config.get("hint_text", "完全专注于文件内容")

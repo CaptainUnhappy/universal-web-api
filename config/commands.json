@@ -586,8 +586,8 @@
       "group_name": "GEMINI_AUTO_RECOVERY",
       "script": "",
       "script_lang": "javascript",
-      "last_triggered": 1773308793.5556521,
-      "trigger_count": 5
+      "last_triggered": 1773327657.4198651,
+      "trigger_count": 6
     },
     {
       "id": "cmd_gemsw001",

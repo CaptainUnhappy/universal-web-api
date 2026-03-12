@@ -608,8 +608,8 @@
             <div class="site-grid" id="siteGrid"></div>
 
             <div class="note">
-                <p><strong>当前已适配并建议在文档中重点关注的站点：</strong> ChatGPT、DeepSeek、Gemini、Claude、Kimi、通义千问、Grok、豆包、AI Studio、Arena AI、H2O GPT。</p>
-                <p style="margin-bottom: 0;">其中 <code>kimi.moonshot.cn</code>、<code>kimi.com</code>、<code>www.kimi.com</code> 属于同一类站点入口；豆包当前以 <code>www.doubao.com</code> 为主；通义千问站点为 <code>chat.qwen.ai</code>。</p>
+                <p><strong>当前已适配并建议在文档中重点关注的站点：</strong> ChatGPT、DeepSeek、Gemini、Claude、Kimi、通义千问、Grok、豆包、AI Studio、Arena AI。</p>
+                <p style="margin-bottom: 0;">本页内容按当前 <code>config/sites.json</code> 同步：Kimi 当前以 <code>www.kimi.com</code> 为准；豆包当前以 <code>www.doubao.com</code> 为主；通义千问站点为 <code>chat.qwen.ai</code>。</p>
             </div>
 
             <div class="highlight-box">
@@ -753,7 +753,7 @@
             <h3>💡 关于登录状态</h3>
             <ul>
                 <li><strong>推荐登录</strong>：建议在网页上登录你的账号，这样 API 也就拥有了你的账号权限（如 Plus 会员、历史记录等）。</li>
-                <li><strong>免登录</strong>：如果该网站在未登录状态下允许对话（如 LM Arena），则无需登录即可直接通过 API 调用。</li>
+                <li><strong>免登录</strong>：如果该网站在未登录状态下允许对话，则无需登录即可直接通过 API 调用。</li>
             </ul>
 
             <div class="note">
@@ -768,7 +768,7 @@
             <ul>
                 <li><strong>ChatGPT</strong>：约 200k。</li>
                 <li><strong>Gemini 官网</strong>：无会员约 30k，Pro 会员尚未发现上限。</li>
-                <li><strong>LM Arena</strong>：120k。</li>
+                <li><strong>Arena AI</strong>：120k。</li>
             </ul>
         </section>
 
@@ -1167,25 +1167,38 @@ curl http://127.0.0.1:8199/tab/2/v1/chat/completions</code></pre>
         <!-- ==================== 文件粘贴 ==================== -->
         <section id="file-paste">
             <h2>📄 文件粘贴</h2>
-            <p>当发送的文本长度超过设定的阈值时，系统会自动将文本写入临时 <code>.txt</code> 文件，然后以文件粘贴的方式发送到输入框。这可以绕过部分网站对输入框字符数的限制。</p>
+            <p>当发送的文本长度超过阈值时，系统会先创建一个临时 <code>.txt</code> 文件，再尝试把这个文件作为真实附件送进网页。它的目标不是单纯往输入框里塞超长文字，而是尽量走站点自己的上传入口，从而绕过部分网站的输入长度限制。</p>
 
             <h3>配置项说明</h3>
             <table>
                 <tr><th>配置项</th><th>默认值</th><th>说明</th></tr>
-                <tr><td>启用</td><td>关闭</td><td>是否开启文件粘贴模式</td></tr>
-                <tr><td>阈值</td><td><code>50000</code> 字符</td><td>文本长度超过此值时触发文件粘贴</td></tr>
-                <tr><td>引导文本</td><td><code>完全专注于文件内容</code></td><td>粘贴文件后自动在输入框中追加的文字</td></tr>
+                <tr><td>启用</td><td>站点预设决定</td><td>是否开启文件粘贴模式</td></tr>
+                <tr><td>阈值</td><td><code>50000</code> 字符</td><td>全局默认值；不同站点预设可以单独覆盖</td></tr>
+                <tr><td>引导文本</td><td><code>完全专注于文件内容</code></td><td>文件挂载成功后自动追加到输入框中的提示语</td></tr>
             </table>
 
             <div class="info-box">
-                <p><strong>💡 适用场景：</strong>文件粘贴模式仅适用于<strong>支持文件上传</strong>的 AI 网站（如 Gemini、ChatGPT 等）。如果目标网站不支持文件上传，开启此功能会导致发送失败。</p>
+                <p><strong>💡 新版工作顺序：</strong>系统会先尝试站点配置里的 <code>file_input</code>，再试通用 <code>input[type=file]</code>，必要时点击 <code>upload_btn</code> 后重试，或者向 <code>drop_zone</code> 投递文件；这些入口都失败后，才会回退到 Windows 剪贴板文件粘贴。</p>
             </div>
 
             <h3>配置方式</h3>
-            <p>在控制面板的「配置」选项卡中找到「文件粘贴」面板，可以针对每个站点（的每个预设）独立配置。也支持批量启用/禁用所有站点。</p>
+            <p>在控制面板的「配置」选项卡中找到「文件粘贴」面板，可以针对每个站点（的每个预设）独立配置。真正需要一起看的不只是 <code>enabled</code> 和 <code>threshold</code>，还包括站点里的 <code>upload_btn</code>、<code>file_input</code>、<code>drop_zone</code> 这些上传入口选择器。</p>
 
             <div class="note">
-                <p><strong>⚠️ 注意：</strong>引导文本的作用是确保 AI 能正确理解粘贴的文件内容。如果留空，部分网站可能不会自动读取文件。</p>
+                <p><strong>⚠️ 注意：</strong>系统现在会在上传后检查页面上是否真的出现了“文件已挂载”的信号。若文件并没有真正被页面接受，就会放弃文件粘贴并回退到普通文本输入。引导文本的作用，则是让模型把注意力放回文件内容本身。</p>
+            </div>
+
+            <h3>当前默认预设里已开启的站点</h3>
+            <ul>
+                <li><code>aistudio.google.com</code></li>
+                <li><code>chatgpt.com</code></li>
+                <li><code>chat.deepseek.com</code></li>
+                <li><code>www.doubao.com</code></li>
+                <li><code>chat.qwen.ai</code></li>
+            </ul>
+
+            <div class="highlight-box">
+                <p><strong>实战建议：</strong>如果你要给新站点开文件粘贴，不要只改一个开关。最稳的做法是先确认网页本身支持附件，再补齐 <code>upload_btn</code> / <code>file_input</code> / <code>drop_zone</code> 中至少一个可用入口，然后再测长文本发送。</p>
             </div>
         </section>
 
@@ -1910,7 +1923,7 @@ if session.error_count > 2:
             <h3>Q8: 这个项目有什么用？</h3>
             <p>A: 这是一个「白嫖」项目，主要用途包括：</p>
             <ul>
-                <li><strong>免费额度利用</strong>：很多 AI 厂商在网页端有相当多的免费额度（如 DeepSeek、AI Studio、LM Arena 等），本项目能将网页额度转化为 OpenAI 格式的 API，供前端调用。</li>
+                <li><strong>免费额度利用</strong>：很多 AI 厂商在网页端有相当多的免费额度（如 DeepSeek、AI Studio、Arena AI 等），本项目能将网页额度转化为 OpenAI 格式的 API，供前端调用。</li>
                 <li><strong>调试上下文</strong>：你可以便捷地查看前端是如何构造上下文的——只需打开浏览器复制一遍脚本发送的请求内容即可。</li>
                 <li><strong>多标签页 + 多预设</strong>：同时开多个标签页，为不同标签页配置不同预设（如主端口用于聊天，副端口用于识图），实现多用途并行。</li>
                 <li><strong>长文本绕过</strong>：通过文件粘贴功能，绕过部分网站输入框的字符限制。</li>
@@ -1933,15 +1946,12 @@ if session.error_count > 2:
             { url: "https://chat.deepseek.com", name: "chat.deepseek.com", id: "deepseek" },
             { url: "https://gemini.google.com", name: "gemini.google.com", id: "gemini" },
             { url: "https://claude.ai", name: "claude.ai", id: "claude" },
-            { url: "https://kimi.moonshot.cn", name: "kimi.moonshot.cn", id: "kimi" },
-            { url: "https://kimi.com", name: "kimi.com", id: "kimi-alt" },
             { url: "https://www.kimi.com", name: "www.kimi.com", id: "kimi-www" },
             { url: "https://chat.qwen.ai", name: "chat.qwen.ai", id: "qwen" },
             { url: "https://grok.com", name: "grok.com", id: "grok" },
             { url: "https://www.doubao.com", name: "doubao.com", id: "doubao" },
             { url: "https://aistudio.google.com", name: "aistudio.google.com", id: "aistudio" },
-            { url: "https://arena.ai", name: "arena.ai", id: "arena" },
-            { url: "https://h2ogpte.genai.h2o.ai", name: "h2ogpte.genai.h2o.ai", id: "h2ogpte" }
+            { url: "https://arena.ai", name: "arena.ai", id: "arena" }
         ];
 
         // 渲染站点卡片
