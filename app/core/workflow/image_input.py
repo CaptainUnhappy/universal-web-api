@@ -31,6 +31,12 @@ class ImageInputHandler:
         self.stealth_mode = stealth_mode
         self._smart_delay = smart_delay_fn
         self._check_cancelled = check_cancelled_fn
+        self._recent_image_upload_at = 0.0
+
+    def has_recent_attachment_upload(self, window: float = 45.0) -> bool:
+        """Whether this request recently attached at least one image."""
+        ts = float(getattr(self, "_recent_image_upload_at", 0.0) or 0.0)
+        return ts > 0 and (time.time() - ts) <= window
     
     def paste_images(self, image_paths: List[str]):
         """
@@ -42,6 +48,7 @@ class ImageInputHandler:
         """
         if not image_paths:
             return
+        self._recent_image_upload_at = 0.0
         
         logger.debug(f"[IMAGE] 开始粘贴 {len(image_paths)} 张图片")
         
@@ -56,6 +63,8 @@ class ImageInputHandler:
             
             if not success:
                 logger.warning(f"[IMAGE] 第 {idx + 1} 张粘贴失败，继续下一张")
+            else:
+                self._recent_image_upload_at = time.time()
             
             # 图片间隔（给网站时间处理上传）
             if idx < len(image_paths) - 1:
