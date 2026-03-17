@@ -1108,6 +1108,10 @@ curl http://127.0.0.1:8199/tab/2/v1/chat/completions</code></pre>
                 </tr>
             </table>
 
+            <div class="info-box">
+                <p><strong>💡 Arena 解析器说明：</strong><code>arena.ai</code> 目前内置了两个响应解析器。<code>lmarena</code> 用于 <strong>direct</strong> 模式，适合单栏直接对话；<code>lmarena_side_left</code> 用于 <strong>side by side</strong> 模式，会自动解析左侧内容（即左边模型的输出）。通常不需要手动填写，按站点默认配置即可；如果你自行改了网络拦截配置，请确保解析器和页面模式对应正确。</p>
+            </div>
+
             <h4>通用配置项（两种模式共用）</h4>
             <table>
                 <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
@@ -1250,6 +1254,10 @@ curl http://127.0.0.1:8199/tab/2/v1/chat/completions</code></pre>
 
             <div class="info-box">
                 <p><strong>📍 配置位置：</strong>进入 <a href="/">控制面板</a> → 命令</p>
+            </div>
+
+            <div class="highlight-box">
+                <p><strong>⚠️ 默认命令说明：</strong>项目默认内置了不少自动化命令，而且默认大多是<strong>禁用状态</strong>。这些命令主要是开发者针对 <strong>Gemini</strong> 和 <strong>Arena</strong> 场景编写的高度定制化恢复、探针和分流逻辑；如果你暂时不清楚某条命令的用途，建议先不要开启，避免误触发或影响正常使用。</p>
             </div>
 
             <h3>两种模式</h3>
@@ -1417,7 +1425,7 @@ curl http://127.0.0.1:8199/tab/2/v1/chat/completions</code></pre>
             <h3>命令组（分组执行）</h3>
             <p>你可以把多条命令收纳到同一个命令组，便于批量执行和编排复用。</p>
             <ul>
-                <li>在命令列表里可批量“收纳为命令组 / 解散分组 / 解散整组”。</li>
+                <li>在命令列表里可批量“收纳为命令组 / 解散分组 / 批量禁用命令”，也可对整组直接“执行 / 禁用 / 解散”。</li>
                 <li>支持手动执行整组（优先在空闲标签页执行，返回成功/失败统计）。</li>
                 <li>可在动作链中使用 <code>execute_command_group</code> 触发整组执行。</li>
                 <li>组内命令按列表顺序执行，可选是否包含禁用命令。</li>

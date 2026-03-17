@@ -83,6 +83,7 @@ class NetworkMonitor:
     DEFAULT_HARD_TIMEOUT = 300             # 全局硬超时
     DEFAULT_RESPONSE_INTERVAL = 0.5        # 响应轮询间隔
     DEFAULT_SILENCE_THRESHOLD = 3.0        # 静默超时（无新数据）
+    MAX_LISTEN_RESTARTS = 3                # 监听状态异常后的最大重建次数
     
     def __init__(self, tab, formatter: SSEFormatter,
                  parser: ResponseParser,
@@ -161,6 +162,14 @@ class NetworkMonitor:
                 self.tab.listen.stop()
         except Exception:
             pass
+
+    @staticmethod
+    def _is_restartable_listen_error(err_text: str) -> bool:
+        err_text = str(err_text or "")
+        return (
+            "监听未启动或已停止" in err_text
+            or ("NoneType" in err_text and "is_running" in err_text)
+        )
 
     def _start_listen(self):
         if not self._listen_pattern:
@@ -399,6 +408,7 @@ class NetworkMonitor:
         phase_start = time.time()
         has_received_response = False
         last_activity_time = time.time()
+        listen_restart_attempts = 0
 
         while True:
             # 检查全局超时
@@ -421,8 +431,16 @@ class NetworkMonitor:
                 response = self.tab.listen.wait(timeout=timeout)
             except Exception as e:
                 err_text = str(e)
-                if "监听未启动或已停止" in err_text and not has_received_response:
-                    logger.warning("[NetworkMonitor] wait 前监听已失效，尝试重建后重试")
+                if self._is_restartable_listen_error(err_text):
+                    listen_restart_attempts += 1
+                    if listen_restart_attempts > self.MAX_LISTEN_RESTARTS:
+                        raise NetworkMonitorError(
+                            f"监听状态恢复失败（已重试 {self.MAX_LISTEN_RESTARTS} 次）: {err_text}"
+                        ) from e
+                    logger.warning(
+                        "[NetworkMonitor] wait 期间监听状态失效，尝试重建后重试 "
+                        f"({listen_restart_attempts}/{self.MAX_LISTEN_RESTARTS})"
+                    )
                     self._ensure_listening("wait_restart")
                     continue
                 raise NetworkMonitorError(err_text) from e
@@ -443,9 +461,10 @@ class NetworkMonitor:
 
             # 标记已收到响应（在读取 body 之前！）
             if not has_received_response:
-                has_received_response = has_received_response
+                has_received_response = True
                 logger.debug("[NetworkMonitor] 已捕获到首次响应")
-            last_activity_time = last_activity_time
+            last_activity_time = time.time()
+            listen_restart_attempts = 0
 
             event = self._extract_event(response)
             if self._dispatch_event(event):

@@ -49,7 +49,9 @@ class CommandEngine(CommandEngineRuntimeMixin, CommandEngineResultsMixin, Comman
         self._config_engine = None
         self._browser = None
         self._commands_file = None
+        self._commands_local_file = None
         self._commands_mtime = 0.0
+        self._commands_local_mtime = 0.0
         self._commands_loaded = False
         self._commands_cache: List[Dict[str, Any]] = []
         self._command_runtime_stats: Dict[str, Dict[str, Any]] = {}
@@ -693,36 +695,139 @@ return (function() {
             self._commands_file = ConfigConstants.COMMANDS_FILE
         return self._commands_file
 
+    def _get_commands_local_file(self) -> str:
+        if self._commands_local_file is None:
+            from app.services.config_engine import ConfigConstants
+            self._commands_local_file = ConfigConstants.COMMANDS_LOCAL_FILE
+        return self._commands_local_file
+
     def _read_commands_file(self) -> List[Dict]:
         commands_file = self._get_commands_file()
-        if not os.path.exists(commands_file):
+        commands = []
+
+        if os.path.exists(commands_file):
+            try:
+                with open(commands_file, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+
+                if isinstance(data, dict):
+                    data = data.get("commands", [])
+
+                if isinstance(data, list):
+                    commands = data
+                else:
+                    logger.warning(f"命令配置文件格式无效: {commands_file}")
+            except json.JSONDecodeError as e:
+                logger.error(f"命令配置文件格式错误: {e}")
+                return []
+            except Exception as e:
+                logger.error(f"加载命令配置失败: {e}")
+                return []
+
+        return self._apply_local_command_state(commands)
+
+    def _load_command_state_entries(self) -> List[Dict[str, Any]]:
+        local_file = self._get_commands_local_file()
+        if not os.path.exists(local_file):
+            self._commands_local_mtime = 0.0
             return []
 
         try:
-            with open(commands_file, "r", encoding="utf-8-sig") as f:
+            with open(local_file, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
 
-            if isinstance(data, dict):
-                data = data.get("commands", [])
-
-            if isinstance(data, list):
-                return data
-
-            logger.warning(f"命令配置文件格式无效: {commands_file}")
-            return []
+            self._commands_local_mtime = os.path.getmtime(local_file)
+            entries = data.get("commands", []) if isinstance(data, dict) else []
+            if not isinstance(entries, list):
+                return []
+            return [entry for entry in entries if isinstance(entry, dict)]
         except json.JSONDecodeError as e:
-            logger.error(f"命令配置文件格式错误: {e}")
+            logger.error(f"本地命令状态文件格式错误: {e}")
             return []
         except Exception as e:
-            logger.error(f"加载命令配置失败: {e}")
+            logger.error(f"加载本地命令状态失败: {e}")
             return []
+
+    def _apply_local_command_state(self, commands: List[Dict]) -> List[Dict]:
+        entries = self._load_command_state_entries()
+        if not entries or not commands:
+            return commands
+
+        by_id = {}
+        by_name = {}
+        for entry in entries:
+            command_id = str(entry.get("id", "")).strip()
+            command_name = str(entry.get("name", "")).strip()
+            if command_id:
+                by_id[command_id] = entry
+            if command_name:
+                by_name[command_name] = entry
+
+        applied = 0
+        for cmd in commands:
+            if not isinstance(cmd, dict):
+                continue
+            command_id = str(cmd.get("id", "")).strip()
+            command_name = str(cmd.get("name", "")).strip()
+            entry = by_id.get(command_id) or by_name.get(command_name)
+            if not entry:
+                continue
+            if "enabled" in entry:
+                cmd["enabled"] = bool(entry.get("enabled"))
+            if "group_name" in entry:
+                cmd["group_name"] = self._normalize_group_name(entry.get("group_name"))
+            applied += 1
+
+        if applied > 0:
+            logger.debug(f"已应用 {applied} 条本地命令状态覆盖")
+        return commands
+
+    def _save_local_command_state(self, commands: List[Dict[str, Any]]) -> bool:
+        local_file = self._get_commands_local_file()
+        tmp_file = local_file + ".tmp"
+        entries = []
+        for cmd in commands:
+            if not isinstance(cmd, dict):
+                continue
+            entries.append({
+                "id": str(cmd.get("id", "")).strip(),
+                "name": str(cmd.get("name", "")).strip(),
+                "enabled": bool(cmd.get("enabled", True)),
+                "group_name": self._normalize_group_name(cmd.get("group_name")),
+            })
+
+        try:
+            os.makedirs(os.path.dirname(local_file), exist_ok=True)
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump({"commands": entries}, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_file, local_file)
+            self._commands_local_mtime = os.path.getmtime(local_file) if os.path.exists(local_file) else 0.0
+            return True
+        except Exception as e:
+            logger.error(f"保存本地命令状态失败: {e}")
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except Exception:
+                pass
+            return False
 
     def _refresh_commands_if_changed(self, force: bool = False):
         with self._commands_lock:
             commands_file = self._get_commands_file()
             current_mtime = os.path.getmtime(commands_file) if os.path.exists(commands_file) else 0.0
+            commands_local_file = self._get_commands_local_file()
+            current_local_mtime = os.path.getmtime(commands_local_file) if os.path.exists(commands_local_file) else 0.0
 
-            if force or not self._commands_loaded or current_mtime != self._commands_mtime:
+            if (
+                force
+                or not self._commands_loaded
+                or current_mtime != self._commands_mtime
+                or current_local_mtime != self._commands_local_mtime
+            ):
                 self._commands_cache = self._read_commands_file()
                 self._commands_mtime = current_mtime
                 self._commands_loaded = True
@@ -741,6 +846,8 @@ return (function() {
                     os.fsync(f.fileno())
 
                 os.replace(tmp_file, commands_file)
+                if not self._save_local_command_state(commands_snapshot):
+                    return False
                 self._commands_mtime = os.path.getmtime(commands_file) if os.path.exists(commands_file) else 0.0
                 self._commands_loaded = True
                 self._commands_cache = commands_snapshot
@@ -972,6 +1079,49 @@ return (function() {
 
         return updated
 
+    def rename_group(self, old_group_name: str, new_group_name: str) -> int:
+        """重命名命令组。"""
+        source_name = self._normalize_group_name(old_group_name)
+        target_name = self._normalize_group_name(new_group_name)
+        if not source_name or not target_name or source_name == target_name:
+            return 0
+
+        updated = 0
+        with self._commands_lock:
+            commands = self._load_commands()
+            for cmd in commands:
+                if self._normalize_group_name(cmd.get("group_name")) != source_name:
+                    continue
+                cmd["group_name"] = target_name
+                updated += 1
+            if updated > 0:
+                self._save_commands(commands)
+        return updated
+
+    def set_commands_enabled(self, command_ids: List[str], enabled: bool) -> int:
+        """鎵归噺鏇存柊鍛戒护鍚敤鐘舵€併€?"""
+        target_ids = {str(cid).strip() for cid in (command_ids or []) if str(cid).strip()}
+        if not target_ids:
+            return 0
+
+        desired_enabled = bool(enabled)
+        updated = 0
+
+        with self._commands_lock:
+            commands = self._load_commands()
+            for cmd in commands:
+                if cmd.get("id") not in target_ids:
+                    continue
+                current_enabled = bool(cmd.get("enabled", True))
+                if current_enabled == desired_enabled:
+                    continue
+                cmd["enabled"] = desired_enabled
+                updated += 1
+            if updated > 0:
+                self._save_commands(commands)
+
+        return updated
+
     def disband_group(self, group_name: str) -> int:
         """解散整个命令组。"""
         normalized_group = self._normalize_group_name(group_name)
@@ -985,6 +1135,28 @@ return (function() {
                 if self._normalize_group_name(cmd.get("group_name")) != normalized_group:
                     continue
                 cmd["group_name"] = ""
+                updated += 1
+            if updated > 0:
+                self._save_commands(commands)
+        return updated
+
+    def set_group_enabled(self, group_name: str, enabled: bool) -> int:
+        """鐩存帴鏇存柊鏁翠釜鍛戒护缁勭殑鍚敤鐘舵€併€?"""
+        normalized_group = self._normalize_group_name(group_name)
+        if not normalized_group:
+            return 0
+
+        desired_enabled = bool(enabled)
+        updated = 0
+        with self._commands_lock:
+            commands = self._load_commands()
+            for cmd in commands:
+                if self._normalize_group_name(cmd.get("group_name")) != normalized_group:
+                    continue
+                current_enabled = bool(cmd.get("enabled", True))
+                if current_enabled == desired_enabled:
+                    continue
+                cmd["enabled"] = desired_enabled
                 updated += 1
             if updated > 0:
                 self._save_commands(commands)

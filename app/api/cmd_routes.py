@@ -157,6 +157,19 @@ class CommandGroupAssignRequest(BaseModel):
     group_name: str = Field(default="", max_length=100)
 
 
+class CommandBatchEnabledRequest(BaseModel):
+    command_ids: List[str]
+    enabled: bool = Field(default=True)
+
+
+class CommandGroupEnabledRequest(BaseModel):
+    enabled: bool = Field(default=True)
+
+
+class CommandGroupRenameRequest(BaseModel):
+    new_group_name: str = Field(default="", max_length=100)
+
+
 class CommandGroupExecuteRequest(BaseModel):
     include_disabled: bool = Field(default=False)
     acquire_policy: str = Field(default="inherit_session")
@@ -223,6 +236,57 @@ async def assign_command_group(
 ):
     updated = command_engine.set_commands_group(body.command_ids, body.group_name)
     return {"success": True, "updated": updated, "group_name": (body.group_name or "").strip()}
+
+
+@router.put("/api/commands/enabled")
+async def update_commands_enabled(
+    body: CommandBatchEnabledRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    updated = command_engine.set_commands_enabled(body.command_ids, body.enabled)
+    return {"success": True, "updated": updated, "enabled": body.enabled}
+
+
+@router.put("/api/command-groups/{group_name}/enabled")
+async def update_command_group_enabled(
+    group_name: str,
+    body: CommandGroupEnabledRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    normalized_name = (group_name or "").strip()
+    updated = command_engine.set_group_enabled(normalized_name, body.enabled)
+    return {
+        "success": True,
+        "updated": updated,
+        "group_name": normalized_name,
+        "enabled": body.enabled,
+    }
+
+
+@router.put("/api/command-groups/{group_name}/rename")
+async def rename_command_group(
+    group_name: str,
+    body: CommandGroupRenameRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    source_name = (group_name or "").strip()
+    target_name = (body.new_group_name or "").strip()
+    if not source_name or not target_name:
+        raise HTTPException(status_code=400, detail="命令组名称不能为空")
+    if source_name == target_name:
+        return {"success": True, "updated": 0, "group_name": source_name, "new_group_name": target_name}
+
+    existing_names = {item.get("name") for item in command_engine.list_command_groups()}
+    if target_name in existing_names:
+        raise HTTPException(status_code=400, detail=f"命令组已存在：{target_name}")
+
+    updated = command_engine.rename_group(source_name, target_name)
+    return {
+        "success": True,
+        "updated": updated,
+        "group_name": source_name,
+        "new_group_name": target_name,
+    }
 
 
 @router.delete("/api/command-groups/{group_name}")

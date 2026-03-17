@@ -975,10 +975,82 @@ window.CommandsTabMethods = {
                 ...this.collapsedGroups,
                 [key]: !this.isGroupCollapsed(key)
             };
+            this.closeBulkActionMenu();
+            this.closeGroupActionMenu();
+        },
+
+        isBulkActionMenuOpen() {
+            return !!this.bulkActionMenuOpen;
+        },
+
+        toggleBulkActionMenu() {
+            const next = !this.bulkActionMenuOpen;
+            this.bulkActionMenuOpen = next;
+            if (next) {
+                this.closeGroupActionMenu();
+            }
+        },
+
+        closeBulkActionMenu() {
+            this.bulkActionMenuOpen = false;
+        },
+
+        isGroupActionMenuOpen(groupName) {
+            return String(this.groupActionMenuOpen || '').trim() === String(groupName || '').trim();
+        },
+
+        toggleGroupActionMenu(groupName) {
+            const key = String(groupName || '').trim();
+            if (!key) return;
+            this.closeBulkActionMenu();
+            this.groupActionMenuOpen = this.isGroupActionMenuOpen(key) ? '' : key;
+        },
+
+        closeGroupActionMenu() {
+            this.groupActionMenuOpen = '';
         },
 
         isCommandSelected(commandId) {
             return (this.selectedCommandIds || []).includes(commandId);
+        },
+
+        getSelectedCount(items) {
+            const ids = Array.isArray(items)
+                ? items.map(item => typeof item === 'object' ? item?.id : item).filter(Boolean)
+                : [];
+            if (ids.length === 0) return 0;
+            const selectedSet = new Set(this.selectedCommandIds || []);
+            return ids.filter(id => selectedSet.has(id)).length;
+        },
+
+        isGroupFullySelected(commands) {
+            const ids = Array.isArray(commands)
+                ? commands.map(cmd => cmd?.id).filter(Boolean)
+                : [];
+            if (ids.length === 0) return false;
+            const selectedSet = new Set(this.selectedCommandIds || []);
+            return ids.every(id => selectedSet.has(id));
+        },
+
+        getGroupSelectionActionLabel(commands) {
+            return this.isGroupFullySelected(commands) ? '取消整组选中' : '整组选中';
+        },
+
+        toggleGroupSelection(commands) {
+            const ids = Array.isArray(commands)
+                ? commands.map(cmd => cmd?.id).filter(Boolean)
+                : [];
+            if (ids.length === 0) return;
+            const selectedSet = new Set(this.selectedCommandIds || []);
+            const allSelected = ids.every(id => selectedSet.has(id));
+            if (allSelected) {
+                ids.forEach(id => selectedSet.delete(id));
+            } else {
+                ids.forEach(id => selectedSet.add(id));
+            }
+            this.selectedCommandIds = Array.from(selectedSet);
+            this.showGroupTools = true;
+            this.closeGroupActionMenu();
         },
 
         toggleCommandSelection(commandId) {
@@ -1151,6 +1223,44 @@ window.CommandsTabMethods = {
             );
         },
 
+        async renameSelectedGroup() {
+            const sourceName = String(this.selectedExistingGroupName || '').trim();
+            const targetName = String(this.pendingGroupName || '').trim();
+            if (!sourceName) {
+                this.$emit('notify', { type: 'error', message: '请先选择要重命名的命令组。' });
+                return;
+            }
+            if (!targetName) {
+                this.$emit('notify', { type: 'error', message: '请输入新的命令组名称。' });
+                return;
+            }
+            if (sourceName === targetName) {
+                this.$emit('notify', { type: 'warning', message: '新旧命令组名称相同，无需重命名。' });
+                return;
+            }
+            if ((this.commandGroups || []).some(group => group.name === targetName)) {
+                this.$emit('notify', { type: 'error', message: '目标命令组名称已存在。' });
+                return;
+            }
+
+            const sourceGroup = (this.commandGroups || []).find(group => group.name === sourceName);
+            const commandIds = Array.isArray(sourceGroup?.commandIds) ? sourceGroup.commandIds : [];
+            if (commandIds.length === 0) {
+                this.$emit('notify', { type: 'error', message: '未找到要重命名的命令组内容。' });
+                return;
+            }
+
+            const updated = await this.assignCommandsToGroup(
+                commandIds,
+                targetName,
+                '命令组已重命名：' + sourceName + ' -> ' + targetName
+            );
+            if (updated > 0) {
+                this.selectedExistingGroupName = targetName;
+                this.pendingGroupName = targetName;
+            }
+        },
+
         async ungroupSelectedCommands() {
             if (!this.hasSelection) {
                 this.$emit('notify', { type: 'error', message: '请先勾选命令。' });
@@ -1163,9 +1273,119 @@ window.CommandsTabMethods = {
             );
         },
 
+        async setCommandsEnabled(commandIds, enabled, successPrefix, errorPrefix = '批量更新命令状态失败') {
+            const ids = Array.isArray(commandIds)
+                ? commandIds.map(id => String(id || '').trim()).filter(Boolean)
+                : [];
+            if (ids.length === 0) {
+                this.$emit('notify', { type: 'error', message: '没有可更新的命令。' });
+                return 0;
+            }
+
+            this.groupWorking = true;
+            try {
+                const result = await this.apiRequest('/api/commands/enabled', {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        command_ids: ids,
+                        enabled: !!enabled
+                    })
+                });
+                const updated = Number(result.updated || 0);
+                this.$emit('notify', {
+                    type: updated > 0 ? 'success' : 'warning',
+                    message: successPrefix + '（' + updated + ' 条）'
+                });
+                await this.fetchCommands();
+                return updated;
+            } catch (e) {
+                this.$emit('notify', { type: 'error', message: errorPrefix + ': ' + e.message });
+                return 0;
+            } finally {
+                this.groupWorking = false;
+            }
+        },
+
+        async disableAllCommands() {
+            const commandIds = (this.commands || [])
+                .map(cmd => cmd?.id)
+                .filter(Boolean);
+            if (commandIds.length === 0) {
+                this.$emit('notify', { type: 'warning', message: '当前没有可禁用命令。' });
+                return;
+            }
+            if (!confirm('确定全部禁用当前所有命令吗？')) return;
+            this.closeBulkActionMenu();
+            await this.setCommandsEnabled(
+                commandIds,
+                false,
+                '已全部禁用命令',
+                '全部禁用失败'
+            );
+        },
+
+        async enableAllDisabledCommands() {
+            const disabledIds = (this.commands || [])
+                .filter(cmd => cmd && cmd.enabled === false)
+                .map(cmd => cmd.id)
+                .filter(Boolean);
+            if (disabledIds.length === 0) {
+                this.$emit('notify', { type: 'warning', message: '当前没有禁用命令。' });
+                return;
+            }
+            if (!confirm('确定全部解禁当前所有禁用命令吗？')) return;
+            this.closeBulkActionMenu();
+            await this.setCommandsEnabled(
+                disabledIds,
+                true,
+                '已全部解禁命令',
+                '全部解禁失败'
+            );
+        },
+
+        async setGroupEnabled(groupName, enabled) {
+            const name = String(groupName || '').trim();
+            if (!name) return 0;
+            const actionText = enabled ? '启用' : '禁用';
+            if (!confirm('确定' + actionText + '命令组「' + name + '」吗？')) return 0;
+
+            this.groupWorking = true;
+            try {
+                const result = await this.apiRequest('/api/command-groups/' + encodeURIComponent(name) + '/enabled', {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        enabled: !!enabled
+                    })
+                });
+                const updated = Number(result.updated || 0);
+                this.$emit('notify', {
+                    type: updated > 0 ? 'success' : 'warning',
+                    message: '命令组已' + actionText + '：' + name + '（' + updated + ' 条）'
+                });
+                await this.fetchCommands();
+                return updated;
+            } catch (e) {
+                this.$emit('notify', { type: 'error', message: actionText + '命令组失败: ' + e.message });
+                return 0;
+            } finally {
+                this.groupWorking = false;
+            }
+        },
+
+        async disableGroup(groupName) {
+            this.closeGroupActionMenu();
+            await this.setGroupEnabled(groupName, false);
+        },
+
+        async enableGroup(groupName) {
+            this.closeGroupActionMenu();
+            await this.setGroupEnabled(groupName, true);
+        },
+
         async disbandGroup(groupName) {
             const name = String(groupName || '').trim();
             if (!name) return;
+            this.closeGroupActionMenu();
             if (!confirm('确定解散命令组「' + name + '」吗？')) return;
             this.groupWorking = true;
             try {
@@ -1187,6 +1407,7 @@ window.CommandsTabMethods = {
         async runGroup(groupName) {
             const name = String(groupName || '').trim();
             if (!name) return;
+            this.closeGroupActionMenu();
             this.groupWorking = true;
             try {
                 const result = await this.apiRequest('/api/command-groups/' + encodeURIComponent(name) + '/execute', {

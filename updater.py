@@ -19,6 +19,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Tuple
 from http.client import IncompleteRead
+from update_preserve import (
+    build_effective_preserve_patterns,
+    get_default_update_preserve_patterns,
+    load_update_preserve_settings,
+)
 
 # ============ 配置常量 ============
 GITHUB_API_BASE = "https://api.github.com/repos"
@@ -33,20 +38,11 @@ API_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300
 
 # 更新时保留的文件/目录
-DEFAULT_PRESERVE = [
-    "chrome_profile",
-    "venv", 
-    "logs",
-    "image",
-    "__pycache__",
-    ".git",
-    "*.pyc",
-    "backup_*",
-    "updater.py"
-]
+DEFAULT_PRESERVE = get_default_update_preserve_patterns()
 
+SITES_CONFIG_PATH = Path("config") / "sites.json"
 COMMANDS_CONFIG_PATH = Path("config") / "commands.json"
-COMMAND_RUNTIME_FIELDS = ("last_triggered", "trigger_count")
+COMMAND_PRESERVE_FIELDS = ("enabled", "group_name", "last_triggered", "trigger_count")
 
 class Colors:
     CYAN = '\033[96m'
@@ -492,7 +488,7 @@ def backup_current(project_dir: Path) -> Optional[Path]:
 
 def should_preserve(path: Path, preserve_patterns: list) -> bool:
     """检查是否应保留"""
-    path_str = str(path)
+    path_str = str(path).replace("\\", "/")
     name = path.name
     
     for pattern in preserve_patterns:
@@ -528,6 +524,94 @@ def load_commands_config(path: Path) -> list:
         log_warning(f"加载命令配置失败，按空列表处理: {path} ({e})")
         return []
 
+def load_sites_config(path: Path) -> dict:
+    """加载站点配置，兼容空文件和 JSON 异常。"""
+    if not path.exists():
+        return {}
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log_warning(f"加载站点配置失败，按空对象处理: {path} ({e})")
+        return {}
+
+def merge_site_records(existing: dict, incoming: dict) -> dict:
+    """递归合并站点配置，优先保留用户本地值。"""
+    if not isinstance(incoming, dict):
+        return dict(existing) if isinstance(existing, dict) else {}
+    if not isinstance(existing, dict):
+        return dict(incoming)
+
+    merged = dict(incoming)
+    for key, existing_value in existing.items():
+        incoming_value = merged.get(key)
+        if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
+            merged[key] = merge_site_records(existing_value, incoming_value)
+        else:
+            merged[key] = existing_value
+    return merged
+
+def merge_sites(existing: dict, incoming: dict) -> tuple[dict, dict]:
+    """
+    合并站点配置。
+
+    - 相同站点：优先保留本地配置，并补入发布版新增字段
+    - 本地独有站点：保留
+    - 发布版独有站点：新增
+    """
+    existing_sites = existing if isinstance(existing, dict) else {}
+    incoming_sites = incoming if isinstance(incoming, dict) else {}
+
+    merged = {}
+    updated = 0
+    added = 0
+    preserved = 0
+
+    incoming_keys = list(incoming_sites.keys())
+    for key in incoming_keys:
+        incoming_value = incoming_sites.get(key)
+        if key in existing_sites:
+            merged[key] = merge_site_records(existing_sites[key], incoming_value)
+            updated += 1
+        else:
+            merged[key] = incoming_value
+            added += 1
+
+    for key, existing_value in existing_sites.items():
+        if key in merged:
+            continue
+        merged[key] = existing_value
+        preserved += 1
+
+    return merged, {
+        "updated": updated,
+        "added": added,
+        "preserved": preserved,
+    }
+
+def merge_sites_file(src_path: Path, dst_path: Path):
+    """合并站点配置文件，优先保留用户已有站点配置。"""
+    incoming = load_sites_config(src_path)
+    existing = load_sites_config(dst_path)
+    merged, stats = merge_sites(existing, incoming)
+    had_existing = dst_path.exists()
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst_path, 'w', encoding='utf-8') as f:
+        json.dump(merged, f, indent=2, ensure_ascii=False)
+
+    if had_existing:
+        log_info(
+            "站点配置已合并: "
+            f"覆盖 {stats['updated']} 个已有站点，"
+            f"新增 {stats['added']} 个发布站点，"
+            f"保留 {stats['preserved']} 个本地站点"
+        )
+    else:
+        log_info(f"站点配置已写入: {len(merged)} 项")
+
 def _same_command(left: dict, right: dict) -> bool:
     """判断两条命令是否代表同一个内置命令。"""
     left_id = str(left.get("id", "")).strip()
@@ -540,9 +624,9 @@ def _same_command(left: dict, right: dict) -> bool:
     return bool(left_name and right_name and left_name == right_name)
 
 def _merge_command_record(existing: dict, incoming: dict) -> dict:
-    """以发布版命令为准，保留本地运行时统计字段。"""
+    """以发布版命令为准，保留本地运行状态与分组状态。"""
     merged = dict(incoming)
-    for field in COMMAND_RUNTIME_FIELDS:
+    for field in COMMAND_PRESERVE_FIELDS:
         if field in existing:
             merged[field] = existing[field]
     return merged
@@ -645,13 +729,18 @@ def extract_and_update(zip_path: Path, project_dir: Path, preserve: list) -> boo
                 rel_path = src_item.relative_to(source_dir)
                 dst_item = project_dir / rel_path
 
+                if should_preserve(rel_path, preserve):
+                    skipped += 1
+                    continue
+
+                if rel_path == SITES_CONFIG_PATH:
+                    merge_sites_file(src_item, dst_item)
+                    updated += 1
+                    continue
+
                 if rel_path == COMMANDS_CONFIG_PATH:
                     merge_command_file(src_item, dst_item)
                     updated += 1
-                    continue
-                
-                if should_preserve(rel_path, preserve):
-                    skipped += 1
                     continue
                 
                 dst_item.parent.mkdir(parents=True, exist_ok=True)
@@ -684,9 +773,11 @@ def check_and_update(repo: str = None, force: bool = False, preserve: list = Non
     if preserve is None:
         preserve_str = os.getenv('UPDATE_PRESERVE', '')
         if preserve_str:
-            preserve = [p.strip() for p in preserve_str.split(',')]
+            preserve = build_effective_preserve_patterns([p.strip() for p in preserve_str.split(',')])
         else:
-            preserve = DEFAULT_PRESERVE.copy()
+            preserve = build_effective_preserve_patterns(
+                load_update_preserve_settings().get("selected_patterns", DEFAULT_PRESERVE.copy())
+            )
     
     print()
     print("=" * 55)

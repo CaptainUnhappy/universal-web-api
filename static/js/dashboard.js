@@ -580,6 +580,13 @@ const app = createApp({
             isSavingConstants: false,
             isLoadingConstants: false,
 
+            // 更新白名单
+            updatePreserveOptions: [],
+            updatePreserveSelected: [],
+            updatePreserveSelectedOriginal: [],
+            isSavingUpdatePreserve: false,
+            isLoadingUpdatePreserve: false,
+
             // Schema 引用
             envSchema: ENV_CONFIG_SCHEMA,
             browserConstantsSchema: BROWSER_CONSTANTS_SCHEMA,
@@ -645,6 +652,11 @@ const app = createApp({
         // 检测元素定义是否有变更
         selectorDefinitionsChanged() {
             return JSON.stringify(this.selectorDefinitions) !== JSON.stringify(this.selectorDefinitionsOriginal);
+        },
+
+        // 检测更新白名单是否有变更
+        updatePreserveChanged() {
+            return JSON.stringify(this.updatePreserveSelected) !== JSON.stringify(this.updatePreserveSelectedOriginal);
         }
     },
 
@@ -1558,6 +1570,63 @@ const app = createApp({
             this.notify('已重置为默认值，请点击保存以应用', 'info');
         },
 
+        // ========== 更新白名单 ==========
+
+        async loadUpdatePreserveSettings() {
+            this.isLoadingUpdatePreserve = true;
+            try {
+                const data = await this.apiRequest('/api/settings/update-preserve');
+                this.updatePreserveOptions = Array.isArray(data.options) ? data.options : [];
+                this.updatePreserveSelected = Array.isArray(data.selected_patterns) ? data.selected_patterns.slice() : [];
+                this.updatePreserveSelectedOriginal = JSON.parse(JSON.stringify(this.updatePreserveSelected));
+            } catch (error) {
+                console.error('加载更新白名单失败:', error);
+                this.updatePreserveOptions = [];
+                this.updatePreserveSelected = [];
+                this.updatePreserveSelectedOriginal = [];
+            } finally {
+                this.isLoadingUpdatePreserve = false;
+            }
+        },
+
+        toggleUpdatePreserve(pattern) {
+            const value = String(pattern || '').trim();
+            if (!value) return;
+            const next = new Set(this.updatePreserveSelected || []);
+            if (next.has(value)) {
+                next.delete(value);
+            } else {
+                next.add(value);
+            }
+            this.updatePreserveSelected = Array.from(next);
+        },
+
+        async saveUpdatePreserveSettings() {
+            this.isSavingUpdatePreserve = true;
+            try {
+                const data = await this.apiRequest('/api/settings/update-preserve', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        selected_patterns: this.updatePreserveSelected
+                    })
+                });
+                this.updatePreserveSelected = Array.isArray(data.selected_patterns)
+                    ? data.selected_patterns.slice()
+                    : this.updatePreserveSelected;
+                this.updatePreserveSelectedOriginal = JSON.parse(JSON.stringify(this.updatePreserveSelected));
+                this.notify('更新白名单已保存，下次自动更新生效', 'success');
+            } catch (error) {
+                this.notify('保存失败: ' + error.message, 'error');
+            } finally {
+                this.isSavingUpdatePreserve = false;
+            }
+        },
+
+        resetUpdatePreserveSettings() {
+            this.updatePreserveSelected = JSON.parse(JSON.stringify(this.updatePreserveSelectedOriginal));
+            this.notify('已恢复到上次保存的更新白名单', 'info');
+        },
+
         // ========== 元素定义管理方法 ==========
 
         async loadSelectorDefinitions() {
@@ -1829,6 +1898,7 @@ const app = createApp({
                 await Promise.all([
                     this.loadEnvConfig(),
                     this.loadBrowserConstants(),
+                    this.loadUpdatePreserveSettings(),
                     this.loadSelectorDefinitions()
                 ]);
                 return;

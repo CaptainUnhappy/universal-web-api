@@ -26,6 +26,8 @@ window.CommandsTabComponent = {
             runGroupAcquirePolicy: 'inherit_session',
             showGroupTools: false,
             collapsedGroups: {},
+            bulkActionMenuOpen: false,
+            groupActionMenuOpen: '',
             draggingCommandId: '',
             dragOverGroupName: '',
             sourceCommandPickerOpen: false,

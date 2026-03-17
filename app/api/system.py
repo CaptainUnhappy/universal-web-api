@@ -23,6 +23,7 @@ from app.core.config import AppConfig, get_logger, log_collector
 from app.core import get_browser, BrowserConnectionError
 from app.services.config_engine import config_engine
 from app.services.request_manager import request_manager
+from update_preserve import load_update_preserve_settings, save_update_preserve_settings
 
 logger = get_logger("API.SYSTEM")
 
@@ -301,6 +302,41 @@ async def save_browser_constants(
 
     except Exception as e:
         logger.error(f"保存浏览器常量失败: {e}")
+        raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
+
+
+@router.get("/api/settings/update-preserve")
+async def get_update_preserve_settings(authenticated: bool = Depends(verify_auth)):
+    """读取更新白名单配置。"""
+    try:
+        data = load_update_preserve_settings()
+        return {
+            "options": data.get("options", []),
+            "selected_patterns": data.get("selected_patterns", []),
+        }
+    except Exception as e:
+        logger.error(f"读取更新白名单失败: {e}")
+        raise HTTPException(status_code=500, detail=f"读取失败: {str(e)}")
+
+
+@router.post("/api/settings/update-preserve")
+async def save_update_preserve(
+    request: Request,
+    authenticated: bool = Depends(verify_auth)
+):
+    """保存更新白名单配置。"""
+    try:
+        data = await request.json()
+        selected_patterns = data.get("selected_patterns", [])
+        result = save_update_preserve_settings(selected_patterns)
+        logger.info(f"更新白名单已保存: {len(result.get('selected_patterns', []))} 项")
+        return {
+            "status": "success",
+            "message": "更新白名单已保存，下次更新时生效",
+            "selected_patterns": result.get("selected_patterns", []),
+        }
+    except Exception as e:
+        logger.error(f"保存更新白名单失败: {e}")
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
 
