@@ -246,8 +246,8 @@ def ask_interval() -> int:
 
 # ================= 主处理流程 =================
 
-def process_images():
-    """处理图片：获取描述 + 生成图片"""
+def process_next_image():
+    """按调度间隔只处理一张图片。"""
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== 开始检测 =====")
 
     # 确保目录存在
@@ -266,15 +266,15 @@ def process_images():
     # 加载 prompt
     doubao_prompt, gemini_prompt = load_prompts()
 
-    # 处理每张图片
+    # 每次调度只处理一张未完成的图片
     for image_path in images:
         image_name = image_path.name
         record = get_or_create_record(data, image_name)
-        print(f"\n--- 处理: {image_name} ---")
 
         if record.get("status") == "done":
-            print(f"[跳过] 已完成")
             continue
+
+        print(f"\n--- 处理: {image_name} ---")
 
         # 第一步：获取图片描述
         description = get_existing_description(data, image_name)
@@ -329,6 +329,10 @@ def process_images():
             if not gemini_prompt:
                 print(f"[步骤2] 跳过：无prompt")
 
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== 检测完成 =====")
+        return
+
+    print("[提示] 没有待处理的图片")
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== 检测完成 =====")
 
 
@@ -345,7 +349,7 @@ class AutoDescribeLoop:
     def _run(self):
         while not self.stop_event.is_set():
             self._counter += 1
-            process_images()
+            process_next_image()
 
             # 等待下一次执行
             if self.stop_event.wait(timeout=self.interval * 60):
