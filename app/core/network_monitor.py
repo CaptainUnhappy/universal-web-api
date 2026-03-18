@@ -10,6 +10,7 @@ app/core/network_monitor.py - 网络响应拦截监听器
 
 import time
 import json
+import re
 from typing import Generator, Optional, Dict, Callable, Any
 
 from app.core.config import logger, SSEFormatter, BrowserConstants
@@ -82,6 +83,7 @@ class NetworkMonitor:
     DEFAULT_HARD_TIMEOUT = 300             # 全局硬超时
     DEFAULT_RESPONSE_INTERVAL = 0.5        # 响应轮询间隔
     DEFAULT_SILENCE_THRESHOLD = 3.0        # 静默超时（无新数据）
+    MAX_LISTEN_RESTARTS = 3                # 监听状态异常后的最大重建次数
     
     def __init__(self, tab, formatter: SSEFormatter,
                  parser: ResponseParser,
@@ -109,6 +111,13 @@ class NetworkMonitor:
         network_config = self._stream_config.get("network", {})
         
         self._listen_pattern = network_config.get("listen_pattern", "")
+        self._stream_match_pattern = network_config.get(
+            "stream_match_pattern",
+            self._listen_pattern,
+        )
+        self._stream_match_mode = str(
+            network_config.get("stream_match_mode", "keyword") or "keyword"
+        ).strip().lower()
         self._first_response_timeout = network_config.get(
             "first_response_timeout",
             self.DEFAULT_FIRST_RESPONSE_TIMEOUT
@@ -153,6 +162,14 @@ class NetworkMonitor:
                 self.tab.listen.stop()
         except Exception:
             pass
+
+    @staticmethod
+    def _is_restartable_listen_error(err_text: str) -> bool:
+        err_text = str(err_text or "")
+        return (
+            "监听未启动或已停止" in err_text
+            or ("NoneType" in err_text and "is_running" in err_text)
+        )
 
     def _start_listen(self):
         if not self._listen_pattern:
@@ -220,6 +237,22 @@ class NetworkMonitor:
             logger.debug(f"[NetworkMonitor] 事件回调异常（忽略）: {e}")
             return False
 
+    def _matches_stream_target(self, event: Dict[str, Any]) -> bool:
+        pattern = str(self._stream_match_pattern or "").strip()
+        if not pattern:
+            return True
+
+        url = str(event.get("url", "") or "")
+        if self._stream_match_mode == "regex":
+            try:
+                return bool(re.search(pattern, url, flags=re.IGNORECASE))
+            except re.error:
+                logger.debug(
+                    f"[NetworkMonitor] 无效 stream_match_pattern 正则，回退关键字匹配: {pattern}"
+                )
+
+        return pattern.lower() in url.lower()
+
     @staticmethod
     def _nested_get(container: Any, *path: str) -> Any:
         current = container
@@ -272,30 +305,15 @@ class NetworkMonitor:
             return ""
 
         parts = []
-        byte_buffer = bytearray()
-
-        def flush_bytes() -> None:
-            if not byte_buffer:
-                return
-            try:
-                parts.append(bytes(byte_buffer).decode("utf-8", errors="ignore"))
-            except Exception:
-                parts.append(bytes(byte_buffer).decode("utf-8", errors="replace"))
-            byte_buffer.clear()
-
         for chunk in chunks:
             data = NetworkMonitor._nested_get(chunk, "data")
             if data in (None, ""):
                 continue
             if isinstance(data, (bytes, bytearray)):
-                byte_buffer.extend(data)
-                continue
-            flush_bytes()
-            if not isinstance(data, str):
+                data = data.decode("utf-8", errors="ignore")
+            elif not isinstance(data, str):
                 data = str(data)
             parts.append(data)
-
-        flush_bytes()
         return "".join(parts)
 
     @staticmethod
@@ -390,6 +408,7 @@ class NetworkMonitor:
         phase_start = time.time()
         has_received_response = False
         last_activity_time = time.time()
+        listen_restart_attempts = 0
 
         while True:
             # 检查全局超时
@@ -412,8 +431,16 @@ class NetworkMonitor:
                 response = self.tab.listen.wait(timeout=timeout)
             except Exception as e:
                 err_text = str(e)
-                if "监听未启动或已停止" in err_text and not has_received_response:
-                    logger.warning("[NetworkMonitor] wait 前监听已失效，尝试重建后重试")
+                if self._is_restartable_listen_error(err_text):
+                    listen_restart_attempts += 1
+                    if listen_restart_attempts > self.MAX_LISTEN_RESTARTS:
+                        raise NetworkMonitorError(
+                            f"监听状态恢复失败（已重试 {self.MAX_LISTEN_RESTARTS} 次）: {err_text}"
+                        ) from e
+                    logger.warning(
+                        "[NetworkMonitor] wait 期间监听状态失效，尝试重建后重试 "
+                        f"({listen_restart_attempts}/{self.MAX_LISTEN_RESTARTS})"
+                    )
                     self._ensure_listening("wait_restart")
                     continue
                 raise NetworkMonitorError(err_text) from e
@@ -437,6 +464,7 @@ class NetworkMonitor:
                 has_received_response = True
                 logger.debug("[NetworkMonitor] 已捕获到首次响应")
             last_activity_time = time.time()
+            listen_restart_attempts = 0
 
             event = self._extract_event(response)
             if self._dispatch_event(event):
@@ -445,6 +473,25 @@ class NetworkMonitor:
                     f"(status={event.get('status')}, url={event.get('url', '')[:100]})"
                 )
                 raise NetworkInterceptionTriggered("network_intercepted")
+
+            if self.parser.get_id() == "event_only":
+                if not has_received_response:
+                    has_received_response = True
+                    logger.debug("[NetworkMonitor] event-only 已捕获到首个网络事件")
+                last_activity_time = time.time()
+                continue
+
+            if not self._matches_stream_target(event):
+                logger.debug(
+                    f"[NetworkMonitor] 非流式目标响应，跳过解析 "
+                    f"(url={event.get('url', '')[:100]})"
+                )
+                continue
+
+            if not has_received_response:
+                has_received_response = True
+                logger.debug("[NetworkMonitor] 已捕获到首个有效响应")
+            last_activity_time = time.time()
 
             # 检查响应对象结构
             if not hasattr(response, 'response'):

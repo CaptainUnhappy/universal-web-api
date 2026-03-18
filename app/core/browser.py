@@ -35,7 +35,6 @@ from app.utils.image_handler import extract_images_from_messages
 from app.utils.site_url import extract_remote_site_domain
 from app.core.workflow import WorkflowExecutor
 from app.core.tab_pool import TabPoolManager, TabSession, get_clipboard_lock
-from app.core.elements import ElementFinder
 
 
 # ================= 配置加载 =================
@@ -246,76 +245,6 @@ class BrowserCore:
                 prompt_parts.append(f"{role}: {text}")
         
         return "\n\n".join(prompt_parts)
-
-    @staticmethod
-    def _count_cjk_chars(text: str) -> int:
-        total = 0
-        for ch in text or "":
-            code = ord(ch)
-            if 0x4E00 <= code <= 0x9FFF:
-                total += 1
-        return total
-
-    def _extract_final_dom_text(
-        self,
-        session: TabSession,
-        preset_name: Optional[str] = None,
-    ) -> str:
-        try:
-            tab = session.tab
-            domain = extract_remote_site_domain(tab.url)
-            if not domain:
-                return ""
-
-            config_engine = self._get_config_engine()
-            effective_preset_name = preset_name if preset_name is not None else session.preset_name
-            site_config = config_engine.get_site_config(domain, tab.html, preset_name=effective_preset_name)
-            if not site_config:
-                return ""
-
-            selector = (site_config.get("selectors", {}) or {}).get("result_container", "")
-            if not selector:
-                return ""
-
-            finder = ElementFinder(tab)
-            elements = finder.find_all(selector, timeout=1)
-            if not elements:
-                return ""
-
-            extractor = config_engine.get_site_extractor(domain, preset_name=effective_preset_name)
-            text = extractor.extract_text(elements[-1]) if extractor else ""
-            return str(text or "").strip()
-        except Exception as e:
-            logger.debug(f"[{session.id}] 提取最终 DOM 文本失败: {e}")
-            return ""
-
-    def _should_prefer_dom_text(
-        self,
-        session: TabSession,
-        api_text: str,
-        dom_text: str,
-    ) -> bool:
-        if not dom_text:
-            return False
-        if not api_text:
-            return True
-
-        domain = ""
-        try:
-            domain = extract_remote_site_domain(session.tab.url)
-        except Exception:
-            pass
-
-        api_cjk = self._count_cjk_chars(api_text)
-        dom_cjk = self._count_cjk_chars(dom_text)
-
-        if domain == "www.doubao.com":
-            if dom_cjk >= api_cjk + 8:
-                return True
-            if len(dom_text) >= len(api_text) + 20:
-                return True
-
-        return False
     def _get_upload_history_images_flag(self, default: bool = True) -> bool:
         """
         获取是否上传历史对话图片的开关。
@@ -358,6 +287,54 @@ class BrowserCore:
     def set_stop_checker(self, checker: Callable[[], bool]):
         """设置停止检查器"""
         self._should_stop_checker = checker or (lambda: False)
+
+    def _get_request_cancel_reason(self, task_id: str = "") -> str:
+        task = str(task_id or "").strip()
+        if not task:
+            return ""
+        try:
+            from app.services.request_manager import request_manager
+
+            ctx = request_manager.get_request(task)
+            if ctx is None:
+                return ""
+            return str(getattr(ctx, "cancel_reason", "") or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _should_rollback_request_count_on_cancel(self, task_id: str = "") -> bool:
+        reason = self._get_request_cancel_reason(task_id)
+        if not reason:
+            return False
+        manual_reasons = {
+            "manual",
+            "manual_terminate",
+            "user_cancel",
+            "user_cancelled",
+            "cancel_button",
+        }
+        return reason in manual_reasons
+
+    def _release_workflow_session(
+        self,
+        session: TabSession,
+        *,
+        effective_stop_checker: Optional[Callable[[], bool]] = None,
+        task_id: str = "",
+    ):
+        cancelled = bool(effective_stop_checker and effective_stop_checker())
+        rollback_request_count = cancelled and self._should_rollback_request_count_on_cancel(task_id)
+        if cancelled and not rollback_request_count:
+            logger.debug(
+                f"[{session.id}] stop detected but request_count preserved "
+                f"(task={task_id or '-'}, reason={self._get_request_cancel_reason(task_id) or 'unknown'})"
+            )
+
+        self.tab_pool.release(
+            session.id,
+            check_triggers=not rollback_request_count,
+            rollback_request_count=rollback_request_count,
+        )
     
     @property
     def tab_pool(self) -> TabPoolManager:
@@ -485,7 +462,8 @@ class BrowserCore:
         messages: List[Dict],
         stream: bool = True,
         task_id: str = None,
-        stop_checker: Optional[Callable[[], bool]] = None
+        stop_checker: Optional[Callable[[], bool]] = None,
+        workflow_priority: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """
         工作流执行入口（v2.0 改进版）
@@ -508,6 +486,7 @@ class BrowserCore:
         # 生成任务 ID（如果没有提供）
         if task_id is None:
             task_id = f"task_{int(time.time() * 1000)}"
+        effective_stop_checker = stop_checker or self._should_stop_checker
         
         # 从池中获取标签页
         session = None
@@ -522,30 +501,38 @@ class BrowserCore:
                 )
                 yield self.formatter.pack_finish()
                 return
+
+            self._bind_request_tab_id(task_id, session)
             
             # 执行工作流
             if stream:
                 yield from self._execute_workflow_stream(
                     session,
                     sanitized_messages,
-                    stop_checker=stop_checker,
+                    stop_checker=effective_stop_checker,
+                    workflow_priority=workflow_priority,
                 )
             else:
                 yield from self._execute_workflow_non_stream(
                     session,
                     sanitized_messages,
-                    stop_checker=stop_checker,
+                    stop_checker=effective_stop_checker,
+                    workflow_priority=workflow_priority,
                 )
         
         finally:
             # 释放标签页
             if session:
-                cancelled = bool(stop_checker and stop_checker())
-                self.tab_pool.release(
-                    session.id,
-                    check_triggers=not cancelled,
-                    rollback_request_count=cancelled,
+                self._release_workflow_session(
+                    session,
+                    effective_stop_checker=effective_stop_checker,
+                    task_id=task_id,
                 )
+                try:
+                    from app.services.command_engine import command_engine
+                    command_engine.schedule_deferred_workflow_commands(session, delay_sec=0.25)
+                except Exception:
+                    pass
 
     def execute_workflow_for_tab_index(
         self, 
@@ -553,7 +540,8 @@ class BrowserCore:
         messages: List[Dict],
         stream: bool = True,
         task_id: str = None,
-        stop_checker: Optional[Callable[[], bool]] = None
+        stop_checker: Optional[Callable[[], bool]] = None,
+        workflow_priority: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """
         使用指定编号的标签页执行工作流
@@ -578,6 +566,7 @@ class BrowserCore:
         # 生成任务 ID
         if task_id is None:
             task_id = f"tab{tab_index}_{int(time.time() * 1000)}"
+        effective_stop_checker = stop_checker or self._should_stop_checker
         
         # 按编号获取标签页
         session = None
@@ -592,41 +581,75 @@ class BrowserCore:
                 )
                 yield self.formatter.pack_finish()
                 return
+
+            self._bind_request_tab_id(task_id, session)
             
             # 执行工作流
             if stream:
                 yield from self._execute_workflow_stream(
                     session,
                     sanitized_messages,
-                    stop_checker=stop_checker,
+                    stop_checker=effective_stop_checker,
+                    workflow_priority=workflow_priority,
                 )
             else:
                 yield from self._execute_workflow_non_stream(
                     session,
                     sanitized_messages,
-                    stop_checker=stop_checker,
+                    stop_checker=effective_stop_checker,
+                    workflow_priority=workflow_priority,
                 )
         
         finally:
             if session:
-                cancelled = bool(stop_checker and stop_checker())
-                self.tab_pool.release(
-                    session.id,
-                    check_triggers=not cancelled,
-                    rollback_request_count=cancelled,
+                self._release_workflow_session(
+                    session,
+                    effective_stop_checker=effective_stop_checker,
+                    task_id=task_id,
                 )
+                try:
+                    from app.services.command_engine import command_engine
+                    command_engine.schedule_deferred_workflow_commands(session, delay_sec=0.25)
+                except Exception:
+                    pass
+
+    def _bind_request_tab_id(self, task_id: str, session: Optional[TabSession]):
+        if not session:
+            return
+        request_id = str(task_id or "").strip()
+        if not request_id:
+            return
+        try:
+            from app.services.request_manager import request_manager
+            request_manager.bind_tab(request_id, session.id)
+        except Exception as e:
+            logger.debug(f"[{session.id}] 绑定请求标签页失败（忽略）: {e}")
    
     def _execute_workflow_stream(
-        self, 
+        self,
         session: TabSession,
         messages: List[Dict],
         preset_name: Optional[str] = None,
-        stop_checker: Optional[Callable[[], bool]] = None
+        stop_checker: Optional[Callable[[], bool]] = None,
+        workflow_priority: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """流式工作流执行（v2.0）"""
     
         tab = session.tab
         effective_stop_checker = stop_checker or self._should_stop_checker
+        workflow_priority_value = 2
+        workflow_runtime = None
+        workflow_aborted = False
+        workflow_abort_message = ""
+        command_engine = None
+        try:
+            from app.services.command_engine import command_engine as _command_engine
+            command_engine = _command_engine
+            workflow_priority_value = command_engine._normalize_priority(
+                workflow_priority, command_engine._get_request_priority_baseline()
+            )
+        except Exception:
+            workflow_priority_value = 2
     
         if effective_stop_checker():
             yield self.formatter.pack_error("请求已取消", code="cancelled")
@@ -770,12 +793,31 @@ class BrowserCore:
         
         extractor = config_engine.get_site_extractor(domain, preset_name=effective_preset_name)
         logger.debug(f"[{session.id}] 使用提取器: {extractor.get_id()} [预设: {effective_preset_name or '主预设'}]")
+
+        if command_engine is not None:
+            try:
+                workflow_runtime = command_engine.begin_workflow_runtime(
+                    session,
+                    task_id=str(getattr(session, "current_task_id", "") or ""),
+                    preset_name=effective_preset_name or "",
+                    priority=workflow_priority_value,
+                )
+            except Exception as e:
+                logger.debug(f"[{session.id}] 工作流运行时注册失败（忽略）: {e}")
+
+        def _combined_stop_checker() -> bool:
+            if effective_stop_checker():
+                return True
+            if command_engine is not None and command_engine.workflow_interrupt_requested(session):
+                setattr(session, "_workflow_stop_reason", "command_interrupt")
+                return True
+            return False
         
         # 创建执行器
         executor = WorkflowExecutor(
             tab=tab,
             stealth_mode=stealth_mode,
-            should_stop_checker=effective_stop_checker,
+            should_stop_checker=_combined_stop_checker,
             extractor=extractor,
             image_config=image_config,
             stream_config=stream_config,
@@ -785,12 +827,52 @@ class BrowserCore:
         )
         
         result_container_selector = selectors.get("result_container", "")
+        setattr(session, "_workflow_stop_reason", None)
+        if not effective_stop_checker():
+            setattr(session, "_workflow_user_stop_logged", False)
         
         try:
-            
-            for step in workflow:
+            step_index = 0
+            while step_index < len(workflow):
+                step = workflow[step_index]
+                if command_engine is not None:
+                    command_engine.update_workflow_runtime_step(session, step_index, step)
+
+                stop_reason = str(getattr(session, "_workflow_stop_reason", "") or "").strip()
+                if stop_reason == "command_interrupt" or (
+                    command_engine is not None and command_engine.workflow_interrupt_requested(session)
+                ):
+                    interrupt_result = (
+                        command_engine.handle_pending_workflow_interrupts(session)
+                        if command_engine is not None
+                        else {"handled": False, "abort": False, "message": ""}
+                    )
+                    if interrupt_result.get("abort"):
+                        workflow_aborted = True
+                        workflow_abort_message = str(
+                            interrupt_result.get("message") or "工作流已被命令打断"
+                        )
+                        logger.warning(
+                            f"[{session.id}] 工作流被命令打断: "
+                            f"{interrupt_result.get('abort_by') or 'unknown'}"
+                        )
+                        yield self.formatter.pack_error(
+                            workflow_abort_message,
+                            code="workflow_interrupted",
+                        )
+                        break
+                    if interrupt_result.get("handled"):
+                        logger.info(f"[{session.id}] 工作流恢复执行")
+                        continue
+
                 if effective_stop_checker():
-                    logger.info(f"[{session.id}] 工作流被用户中断")
+                    if getattr(session, "_workflow_user_stop_logged", False):
+                        break
+                    if stop_reason == "timeout":
+                        logger.warning(f"[{session.id}] 工作流因超时停止")
+                    else:
+                        logger.info(f"[{session.id}] 工作流被用户中断")
+                    setattr(session, "_workflow_user_stop_logged", True)
                     break
                 
                 action = step.get('action', '')
@@ -802,6 +884,7 @@ class BrowserCore:
                 
                 if not selector and action not in ("WAIT", "KEY_PRESS", "COORD_CLICK", "JS_EXEC"):
                     if optional:
+                        step_index += 1
                         continue
                     else:
                         yield self.formatter.pack_error(
@@ -824,6 +907,7 @@ class BrowserCore:
                     
                     if action in ("STREAM_WAIT", "STREAM_OUTPUT"):
                         result_container_selector = selector
+                    step_index += 1
                         
                 except (ElementNotFoundError, WorkflowError):
                     break
@@ -832,9 +916,31 @@ class BrowserCore:
                         yield self.formatter.pack_error(f"执行中断: {str(e)}")
                         break
             
+            if (
+                not workflow_aborted
+                and command_engine is not None
+                and command_engine.workflow_interrupt_requested(session)
+            ):
+                interrupt_result = command_engine.handle_pending_workflow_interrupts(session)
+                if interrupt_result.get("abort"):
+                    workflow_aborted = True
+                    workflow_abort_message = str(
+                        interrupt_result.get("message") or "工作流已被命令打断"
+                    )
+                    logger.warning(
+                        f"[{session.id}] 工作流收尾阶段被命令打断: "
+                        f"{interrupt_result.get('abort_by') or 'unknown'}"
+                    )
+                    yield self.formatter.pack_error(
+                        workflow_abort_message,
+                        code="workflow_interrupted",
+                    )
+                elif interrupt_result.get("handled"):
+                    logger.info(f"[{session.id}] 工作流收尾阶段已执行挂起命令")
+
             # 图片提取
             logger.debug(f"[PROBE] Workflow 循环结束，image_enabled={image_extraction_enabled}, should_stop={effective_stop_checker()}")
-            if image_extraction_enabled and not effective_stop_checker():
+            if image_extraction_enabled and not effective_stop_checker() and not workflow_aborted:
                 logger.debug("[PROBE] 进入图片提取分支")
                 try:
                     images = self._extract_images_after_stream(
@@ -843,7 +949,7 @@ class BrowserCore:
                         image_config=image_config,
                         result_selector=result_container_selector,
                         completion_id=executor._completion_id,
-                        stop_checker=effective_stop_checker
+                        stop_checker=_combined_stop_checker
                     )
                     
                     if images:
@@ -854,27 +960,35 @@ class BrowserCore:
                         logger.debug(f"[PROBE] 即将发送图片（Markdown），数量={len(images)}")
 
                         try:
-                            public_base = os.getenv("PUBLIC_BASE_URL", "").strip()
-                            base = public_base.rstrip("/") if public_base else f"http://{AppConfig.get_host()}:{AppConfig.get_port()}"
-                            md_parts = []
-                            for img in images:
-                                img_url = (img.get("url") or "").strip()
-                                if img_url:
-                                    md_url = base + img_url
-                                    md_parts.append(f"![image]({md_url})")
-                                    logger.debug(f"[MD_IMAGE] 图片链接: {md_url}")
-                            if md_parts:
-                                md = "\n\n" + "\n\n".join(md_parts) + "\n\n"
+                            first_url = (images[0].get("url") or "").strip() if images else ""
+                            if first_url:
+                                public_base = os.getenv("PUBLIC_BASE_URL", "").strip()
+                                if public_base:
+                                    md_url = public_base.rstrip("/") + first_url
+                                else:
+                                    md_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}{first_url}"
+
+                                md = f"\n\n![image]({md_url})\n\n"
                                 yield self.formatter.pack_chunk(md, completion_id=executor._completion_id)
-                                logger.debug(f"[MD_IMAGE] 已发送 {len(md_parts)} 张图片链接")
+                                logger.debug(f"[MD_IMAGE] 已发送 Markdown 图片链接: {md_url}")
                             else:
-                                logger.warning("[MD_IMAGE] 所有图片 url 为空，跳过 Markdown 输出")
+                                logger.warning("[MD_IMAGE] images[0].url 为空，跳过 Markdown 输出")
                         except Exception as e:
                             logger.warning(f"[MD_IMAGE] 发送 Markdown 图片链接失败: {e}")            
                 except Exception as e:
                     logger.warning(f"[{session.id}] 图片提取失败: {e}")
         
         finally:
+            if command_engine is not None and workflow_runtime is not None:
+                try:
+                    stop_reason = str(getattr(session, "_workflow_stop_reason", "") or "").strip()
+                    externally_stopped = bool(effective_stop_checker()) and stop_reason != "command_interrupt"
+                    command_engine.finish_workflow_runtime(
+                        session,
+                        aborted=workflow_aborted or bool(workflow_abort_message) or externally_stopped,
+                    )
+                except Exception as e:
+                    logger.debug(f"[{session.id}] 工作流运行时清理失败（忽略）: {e}")
             yield self.formatter.pack_finish()
     
     def _extract_images_after_stream(
@@ -938,7 +1052,7 @@ class BrowserCore:
     def _try_screenshot_images_to_local(self, tab, last_element, images: List[Dict], image_config: Dict = None) -> List[Dict]:
         """
         优先下载图片（更精准），下载失败才截图。
-        对所有 http(s) 图片逐一处理，而不是只处理第一张。
+        基于实测 API：img_ele.attr('src'), page.cookies(), get_screenshot(path)
         """
         from pathlib import Path
         import time as time_module
@@ -948,66 +1062,84 @@ class BrowserCore:
         if not images:
             return images
 
-        image_config = image_config or {}
+        img0 = images[0]
+        url0 = (img0.get("url") or "").strip()
 
-        # 筛选出需要处理的 http(s) 图片（按原始索引）
-        http_image_indices = [
-            i for i, img in enumerate(images)
-            if img.get("kind") == "url" and (img.get("url") or "").startswith(("http://", "https://"))
-        ]
-        if not http_image_indices:
+        # 仅当是 http(s) 外链时才处理
+        if not (url0.startswith("http://") or url0.startswith("https://")):
             return images
 
+        # 准备目录与文件名
         out_dir = Path("download_images")
         out_dir.mkdir(exist_ok=True)
+        filename = f"{int(time_module.time())}_{uuid.uuid4().hex[:8]}.png"
+        out_path = out_dir / filename
 
-        # 获取 cookies（一次性，供所有图片复用）
-        cookies_dict = {}
+        # 从站点配置获取图片选择器
+        image_config = image_config or {}
+        selector = image_config.get("selector", "img")
+
+        # ===== 1. 定位图片元素 =====
         try:
-            cookies_list = tab.cookies()
-            if cookies_list:
-                for c in cookies_list:
-                    if isinstance(c, dict) and 'name' in c and 'value' in c:
-                        cookies_dict[c['name']] = c['value']
-        except Exception:
-            pass
+            if selector and selector != "img":
+                img_eles = tab.eles(f"css:{selector}", timeout=0.5)
+                logger.debug(f"图片定位：使用 '{selector}'，找到 {len(img_eles) if img_eles else 0} 个")
+            else:
+                img_eles = last_element.eles("css:img", timeout=0.5)
+                logger.debug(f"图片定位：使用默认选择器，找到 {len(img_eles) if img_eles else 0} 个")
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': tab.url,
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        }
+            if not img_eles:
+                logger.warning(f"图片定位：未找到元素 (selector: {selector})")
+                return images
 
-        # 预先定位页面上的图片元素（供截图回退用）
-        img_eles = []
-        try:
-            container_sel = image_config.get("container_selector")
-            img_sel = image_config.get("selector", "img")
-            eles_selector = container_sel if container_sel else f"css:{img_sel}"
-            img_eles = tab.eles(eles_selector, timeout=0.5) or []
-            logger.debug(f"图片定位：找到 {len(img_eles)} 个元素")
+            img_ele = img_eles[-1]
         except Exception as e:
-            logger.debug(f"图片元素定位失败（截图回退不可用）: {e}")
+            logger.warning(f"图片定位失败: {e}")
+            return images
 
-        result_images = list(images)
+        saved = False
 
-        for idx in http_image_indices:
-            img = images[idx]
-            url = img["url"].strip()
-            filename = f"{int(time_module.time())}_{uuid.uuid4().hex[:8]}.png"
-            out_path = out_dir / filename
-            saved = False
+        # ===== 2. 优先下载图片（精准且小文件）=====
+        try:
+            # 获取图片 URL（实测：attr 和 link 都可用）
+            img_src = img_ele.attr('src') or img_ele.link
 
-            # ===== 1. 优先下载（精准且小文件）=====
-            try:
-                logger.debug(f"[{idx+1}/{len(images)}] 尝试下载: {url[:80]}...")
-                response = requests.get(url, cookies=cookies_dict, headers=headers, timeout=15, allow_redirects=True)
+            if img_src and img_src.startswith('http'):
+                logger.debug(f"尝试下载: {img_src[:80]}...")
+
+                # 获取 cookies（实测：返回字典列表）
+                cookies_dict = {}
+                try:
+                    cookies_list = tab.cookies()
+                    if cookies_list:
+                        for c in cookies_list:
+                            if isinstance(c, dict) and 'name' in c and 'value' in c:
+                                cookies_dict[c['name']] = c['value']
+                except:
+                    pass
+
+                # 下载图片
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': tab.url,
+                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                }
+
+                response = requests.get(
+                    img_src,
+                    cookies=cookies_dict,
+                    headers=headers,
+                    timeout=15,
+                    allow_redirects=True
+                )
 
                 if response.status_code == 200:
                     content = response.content
                     content_type = response.headers.get('Content-Type', '')
 
+                    # 检查是否是有效图片
                     if len(content) > 1000 and 'image' in content_type:
+                        # 根据 Content-Type 调整扩展名
                         if 'jpeg' in content_type or 'jpg' in content_type:
                             filename = filename.replace('.png', '.jpg')
                             out_path = out_dir / filename
@@ -1023,40 +1155,46 @@ class BrowserCore:
                 else:
                     logger.debug(f"下载失败: HTTP {response.status_code}")
 
+        except Exception as e:
+            logger.debug(f"下载异常，将尝试截图: {str(e)[:100]}")
+
+        # ===== 3. 回退到截图（文件更大但稳定）=====
+        if not saved:
+            logger.debug("回退到截图方式")
+            try:
+                # 实测：get_screenshot(path) 返回路径字符串
+                result = img_ele.get_screenshot(str(out_path))
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    saved = True
+                    logger.debug(f"✅ 截图成功: {filename} ({out_path.stat().st_size} bytes)")
             except Exception as e:
-                logger.debug(f"下载异常，将尝试截图: {str(e)[:100]}")
+                logger.warning(f"截图失败: {e}")
 
-            # ===== 2. 回退到截图（文件更大但稳定）=====
-            if not saved and img_eles:
-                try:
-                    img_ele = img_eles[idx] if idx < len(img_eles) else img_eles[-1]
-                    img_ele.get_screenshot(str(out_path))
-                    if out_path.exists() and out_path.stat().st_size > 0:
-                        saved = True
-                        logger.debug(f"✅ 截图成功: {filename} ({out_path.stat().st_size} bytes)")
-                except Exception as e:
-                    logger.warning(f"截图失败: {e}")
+        if not saved:
+            logger.warning("图片保存失败：下载和截图均失败")
+            return images
 
-            if saved:
-                new_img = dict(img)
-                new_img["kind"] = "url"
-                new_img["url"] = f"/download_images/{filename}"
-                new_img["source"] = "local_file"
-                new_img["local_path"] = str(out_path)
-                new_img["byte_size"] = out_path.stat().st_size if out_path.exists() else 0
-                result_images[idx] = new_img
-                logger.debug(f"✅ 图片 [{idx+1}] 已保存: /download_images/{filename}")
-            else:
-                logger.warning(f"图片 [{idx+1}] 保存失败：下载和截图均失败，保留原 URL")
+        local_url = f"/download_images/{filename}"
 
-        return result_images
+        # 覆写第 1 张图片为本地 URL
+        new0 = dict(img0)
+        new0["kind"] = "url"
+        new0["url"] = local_url
+        new0["source"] = "local_file"
+        new0["local_path"] = str(out_path)
+        new0["byte_size"] = out_path.stat().st_size
+
+        new_images = [new0] + images[1:]
+        logger.debug(f"✅ 图片已保存: {local_url} ({new0['byte_size']} bytes)")
+        return new_images
     
     def _execute_workflow_non_stream(
         self, 
         session: TabSession,
         messages: List[Dict],
         preset_name: Optional[str] = None,
-        stop_checker: Optional[Callable[[], bool]] = None
+        stop_checker: Optional[Callable[[], bool]] = None,
+        workflow_priority: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """非流式工作流执行"""
         collected_content = []
@@ -1067,6 +1205,7 @@ class BrowserCore:
             messages,
             preset_name=preset_name,
             stop_checker=stop_checker,
+            workflow_priority=workflow_priority,
         ):
             if chunk.startswith("data: [DONE]"):
                 continue
@@ -1094,13 +1233,6 @@ class BrowserCore:
             yield json.dumps(error_data, ensure_ascii=False)
         else:
             full_content = "".join(collected_content)
-            dom_text = self._extract_final_dom_text(session, preset_name=preset_name)
-            if self._should_prefer_dom_text(session, full_content, dom_text):
-                logger.info(
-                    f"[{session.id}] 非流式响应已切换为 DOM 最终文本 "
-                    f"(api_len={len(full_content)}, dom_len={len(dom_text)})"
-                )
-                full_content = dom_text
             response = self.formatter.pack_non_stream(full_content)
             yield json.dumps(response, ensure_ascii=False)
 

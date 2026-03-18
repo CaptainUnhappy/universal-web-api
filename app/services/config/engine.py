@@ -36,7 +36,9 @@ class ConfigConstants:
     """配置引擎常量"""
     _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     CONFIG_FILE = os.getenv("SITES_CONFIG_FILE", os.path.join(_PROJECT_ROOT, "config", "sites.json"))
+    SITES_LOCAL_FILE = os.getenv("SITES_LOCAL_FILE", os.path.join(_PROJECT_ROOT, "config", "sites.local.json"))
     COMMANDS_FILE = os.getenv("COMMANDS_CONFIG_FILE", os.path.join(_PROJECT_ROOT, "config", "commands.json"))
+    COMMANDS_LOCAL_FILE = os.getenv("COMMANDS_LOCAL_FILE", os.path.join(_PROJECT_ROOT, "config", "commands.local.json"))
     IMAGE_PRESETS_FILE = os.path.join(_PROJECT_ROOT, "config", "image_presets.json")
     
     MAX_HTML_CHARS = int(os.getenv("MAX_HTML_CHARS", "120000"))
@@ -101,7 +103,9 @@ class ConfigEngine:
     
     def __init__(self):
         self.config_file = ConfigConstants.CONFIG_FILE
+        self.local_sites_file = ConfigConstants.SITES_LOCAL_FILE
         self.last_mtime = 0.0
+        self.last_local_mtime = 0.0
         self.sites: Dict[str, SiteConfig] = {}
         
         # 子管理器
@@ -121,6 +125,7 @@ class ConfigEngine:
         self._migrate_to_presets()
         self.migrate_site_configs()
         self._cleanup_preset_residuals()
+        self._apply_local_site_overrides()
         
         logger.debug(f"配置引擎已初始化，已加载 {len(self.sites)} 个站点配置")
     
@@ -130,6 +135,7 @@ class ConfigEngine:
         """初始化加载配置文件"""
         if not os.path.exists(self.config_file):
             logger.info(f"配置文件 {self.config_file} 不存在，将创建新文件")
+            self._apply_local_site_overrides()
             return
         
         try:
@@ -151,6 +157,7 @@ class ConfigEngine:
                     k: v for k, v in data.items() 
                     if not k.startswith('_')
                 }
+                self._apply_local_site_overrides()
                 logger.debug(f"已加载配置文件: {self.config_file} (mtime: {self.last_mtime})")
         
         except json.JSONDecodeError as e:
@@ -160,12 +167,13 @@ class ConfigEngine:
     
     def refresh_if_changed(self):
         """检查文件是否变化，如果变化则重载"""
-        if not os.path.exists(self.config_file):
+        if not os.path.exists(self.config_file) and not os.path.exists(self.local_sites_file):
             return
 
         try:
-            current_mtime = os.path.getmtime(self.config_file)
-            if current_mtime != self.last_mtime:
+            current_mtime = os.path.getmtime(self.config_file) if os.path.exists(self.config_file) else 0.0
+            current_local_mtime = os.path.getmtime(self.local_sites_file) if os.path.exists(self.local_sites_file) else 0.0
+            if current_mtime != self.last_mtime or current_local_mtime != self.last_local_mtime:
                 logger.debug(f"⚡ 检测到配置文件变化 (new mtime: {current_mtime})")
                 self.reload_config()
         except Exception as e:
@@ -198,6 +206,7 @@ class ConfigEngine:
                 if not k.startswith('_')
             }
             self.last_mtime = mtime
+            self._apply_local_site_overrides()
             logger.debug(f"✅ 配置已热重载 (Sites: {len(self.sites)})")
             
         except json.JSONDecodeError as e:
@@ -232,12 +241,96 @@ class ConfigEngine:
             # 更新时间戳
             if os.path.exists(self.config_file):
                 self.last_mtime = os.path.getmtime(self.config_file)
+
+            if not self._save_local_site_overrides():
+                return False
             
             logger.info(f"配置已保存: {self.config_file}")
             return True
         
         except Exception as e:
             logger.error(f"保存配置失败: {e}")
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except Exception:
+                pass
+            return False
+
+    def _load_local_site_overrides(self) -> Dict[str, str]:
+        """加载本地站点覆盖配置，目前仅记录默认预设选择。"""
+        if not os.path.exists(self.local_sites_file):
+            self.last_local_mtime = 0.0
+            return {}
+
+        try:
+            with open(self.local_sites_file, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+
+            self.last_local_mtime = os.path.getmtime(self.local_sites_file)
+            defaults = data.get("default_presets", {}) if isinstance(data, dict) else {}
+            if not isinstance(defaults, dict):
+                return {}
+
+            return {
+                str(domain).strip(): str(preset).strip()
+                for domain, preset in defaults.items()
+                if str(domain).strip() and str(preset).strip()
+            }
+        except json.JSONDecodeError as e:
+            logger.error(f"本地站点覆盖配置格式错误: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"加载本地站点覆盖配置失败: {e}")
+            return {}
+
+    def _apply_local_site_overrides(self):
+        """将本地默认预设选择覆盖到当前站点配置。"""
+        overrides = self._load_local_site_overrides()
+        if not overrides:
+            return
+
+        applied = 0
+        for domain, preset_name in overrides.items():
+            site = self.sites.get(domain)
+            if not isinstance(site, dict):
+                continue
+            presets = site.get("presets", {})
+            if not isinstance(presets, dict) or preset_name not in presets:
+                continue
+            site["default_preset"] = preset_name
+            applied += 1
+
+        if applied > 0:
+            logger.debug(f"已应用 {applied} 个本地默认预设覆盖")
+
+    def _save_local_site_overrides(self) -> bool:
+        """保存本地站点覆盖配置。"""
+        tmp_file = self.local_sites_file + ".tmp"
+        defaults = {}
+        for domain, site in self.sites.items():
+            if domain.startswith('_') or not isinstance(site, dict):
+                continue
+            preset_name = self._resolve_default_preset_name(site)
+            if preset_name:
+                defaults[domain] = preset_name
+
+        payload = {
+            "default_presets": defaults
+        }
+
+        try:
+            os.makedirs(os.path.dirname(self.local_sites_file), exist_ok=True)
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_file, self.local_sites_file)
+            self.last_local_mtime = os.path.getmtime(self.local_sites_file)
+            return True
+        except Exception as e:
+            logger.error(f"保存本地站点覆盖配置失败: {e}")
             try:
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)

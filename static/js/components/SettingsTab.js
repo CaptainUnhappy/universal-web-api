@@ -13,6 +13,11 @@ window.SettingsTab = {
         browserCollapsed: { type: Object, required: true },
         browserChanged: { type: Boolean, default: false },
         savingBrowser: { type: Boolean, default: false },
+
+        updatePreserveOptions: { type: Array, required: true },
+        updatePreserveSelected: { type: Array, required: true },
+        updatePreserveChanged: { type: Boolean, default: false },
+        savingUpdatePreserve: { type: Boolean, default: false },
         
         selectorDefinitions: { type: Array, required: true },
         definitionsChanged: { type: Boolean, default: false },
@@ -21,14 +26,27 @@ window.SettingsTab = {
     emits: [
         'save-env', 'reset-env', 'toggle-env-group',
         'save-browser', 'reset-browser', 'toggle-browser-group',
+        'save-update-preserve', 'reset-update-preserve', 'toggle-update-preserve',
         'save-definitions', 'reset-definitions',
         'add-definition', 'edit-definition', 'remove-definition', 
         'toggle-definition', 'move-definition'
     ],
     data() {
         return {
-            selectorDefsCollapsed: true
+            selectorDefsCollapsed: true,
+            updatePreserveCollapsed: true
         };
+    },
+    computed: {
+        updatePreserveGroups() {
+            const groups = {}
+            for (const item of this.updatePreserveOptions || []) {
+                const key = item.category || '其他'
+                if (!groups[key]) groups[key] = []
+                groups[key].push(item)
+            }
+            return groups
+        }
     },
     template: `
         <div class="h-full overflow-auto p-4 md:p-6 bg-gray-50 dark:bg-gray-900">
@@ -323,6 +341,61 @@ window.SettingsTab = {
                                             <span>{{ field.desc }}</span>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+                    <div class="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center cursor-pointer"
+                         @click="updatePreserveCollapsed = !updatePreserveCollapsed">
+                        <div>
+                            <h3 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                                <span class="text-xl">🛠️</span> 更新白名单
+                            </h3>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">勾选后，下次自动更新会原样保留对应文件或目录</p>
+                        </div>
+                        <div class="flex gap-2 items-center">
+                            <button @click.stop="$emit('reset-update-preserve')" title="重置"
+                                    class="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                                <span v-html="$icons.arrowPath"></span>
+                            </button>
+                            <button @click.stop="$emit('save-update-preserve')"
+                                    :disabled="savingUpdatePreserve || !updatePreserveChanged"
+                                    :class="['px-3 py-1.5 text-sm font-medium text-white rounded-lg transition-colors flex items-center gap-1 shadow-sm',
+                                             savingUpdatePreserve || !updatePreserveChanged
+                                             ? 'bg-blue-400 cursor-not-allowed opacity-60'
+                                             : 'bg-blue-600 hover:bg-blue-700']">
+                                <span v-if="!savingUpdatePreserve" v-html="$icons.arrowDownTray" class="w-4 h-4"></span>
+                                {{ savingUpdatePreserve ? '...' : '保存' }}
+                            </button>
+                            <button class="p-1.5 ml-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                                    v-html="updatePreserveCollapsed ? $icons.chevronDown : $icons.chevronUp">
+                            </button>
+                        </div>
+                    </div>
+
+                    <div v-show="!updatePreserveCollapsed" class="p-4 space-y-4">
+                        <div class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                            这里控制的是“更新时是否保留不变”，不是运行时是否启用。目录项会保留整个目录；未勾选的项目会在更新时按新版本内容覆盖或合并。
+                        </div>
+
+                        <div class="space-y-4">
+                            <div v-for="(items, category) in updatePreserveGroups" :key="category" class="space-y-2">
+                                <div class="text-xs font-semibold uppercase tracking-[0.14em] text-gray-400 dark:text-gray-500">{{ category }}</div>
+                                <div class="grid gap-2 md:grid-cols-2">
+                                    <label v-for="item in items" :key="item.id"
+                                           class="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50/70 px-3 py-3 text-sm text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-900/70">
+                                        <input type="checkbox"
+                                               :checked="updatePreserveSelected.includes(item.pattern)"
+                                               @change="$emit('toggle-update-preserve', item.pattern)"
+                                               class="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                        <span class="min-w-0">
+                                            <span class="block font-medium">{{ item.label }}</span>
+                                            <span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ item.description }}</span>
+                                        </span>
+                                    </label>
                                 </div>
                             </div>
                         </div>

@@ -580,6 +580,13 @@ const app = createApp({
             isSavingConstants: false,
             isLoadingConstants: false,
 
+            // 更新白名单
+            updatePreserveOptions: [],
+            updatePreserveSelected: [],
+            updatePreserveSelectedOriginal: [],
+            isSavingUpdatePreserve: false,
+            isLoadingUpdatePreserve: false,
+
             // Schema 引用
             envSchema: ENV_CONFIG_SCHEMA,
             browserConstantsSchema: BROWSER_CONSTANTS_SCHEMA,
@@ -645,6 +652,11 @@ const app = createApp({
         // 检测元素定义是否有变更
         selectorDefinitionsChanged() {
             return JSON.stringify(this.selectorDefinitions) !== JSON.stringify(this.selectorDefinitionsOriginal);
+        },
+
+        // 检测更新白名单是否有变更
+        updatePreserveChanged() {
+            return JSON.stringify(this.updatePreserveSelected) !== JSON.stringify(this.updatePreserveSelectedOriginal);
         }
     },
 
@@ -1072,7 +1084,7 @@ const app = createApp({
                             id: Date.now() + Math.random(),
                             timestamp: new Date(log.timestamp * 1000).toLocaleTimeString() + '.' +
                                 String(Math.floor((log.timestamp % 1) * 1000)).padStart(3, '0'),
-                            level: this.parseLogLevel(log.message),
+                            level: this.normalizeLogLevel(log.level, log.message),
                             message: log.message
                         });
                     });
@@ -1094,32 +1106,47 @@ const app = createApp({
             }
         },
 
-        parseLogLevel(message) {
-            if (message.includes('[AI]') || message.includes('AI')) return 'AI';
-            if (message.includes('[ERROR]') || message.includes('ERROR')) return 'ERROR';
-            if (message.includes('[WARN]') || message.includes('WARNING')) return 'WARN';
+        normalizeLogLevel(level, message) {
+            const normalized = String(level || '').toUpperCase();
+            if (normalized === 'WARNING') return 'WARN';
+            if (normalized === 'CRITICAL') return 'ERROR';
+            if (normalized === 'DEBUG' || normalized === 'WARN' || normalized === 'ERROR') {
+                return normalized;
+            }
+
+            if (normalized === 'INFO') {
+                if (message.includes('[AI]')) return 'AI';
+                if (message.includes('[OK]') || message.includes('[SUCCESS]') || message.includes('✅')) return 'OK';
+                return 'INFO';
+            }
+
+            if (message.includes('[AI]')) return 'AI';
+            if (message.includes('[ERROR]')) return 'ERROR';
+            if (message.includes('[WARN]') || message.includes('[WARNING]')) return 'WARN';
             if (message.includes('[OK]') || message.includes('[SUCCESS]') || message.includes('✅')) return 'OK';
             return 'INFO';
         },
 
         getLogColorClass(level) {
             const colors = {
-                'INFO': 'bg-gray-50 dark:bg-gray-900',
+                'INFO': 'bg-green-50 dark:bg-green-900/20',
                 'AI': 'bg-purple-50 dark:bg-purple-900/20',
                 'OK': 'bg-green-50 dark:bg-green-900/20',
                 'WARN': 'bg-yellow-50 dark:bg-yellow-900/20',
-                'ERROR': 'bg-red-50 dark:bg-red-900/20'
+                'ERROR': 'bg-red-50 dark:bg-red-900/20',
+                'KEY': 'bg-sky-50 dark:bg-sky-900/20'
             };
             return colors[level] || colors['INFO'];
         },
 
         getLogLevelClass(level) {
             const colors = {
-                'INFO': 'text-gray-600 dark:text-gray-400',
+                'INFO': 'text-green-600 dark:text-green-400',
                 'AI': 'text-purple-600 dark:text-purple-400',
                 'OK': 'text-green-600 dark:text-green-400',
                 'WARN': 'text-yellow-600 dark:text-yellow-400',
-                'ERROR': 'text-red-600 dark:text-red-400'
+                'ERROR': 'text-red-600 dark:text-red-400',
+                'KEY': 'text-sky-500 dark:text-sky-300'
             };
             return colors[level] || colors['INFO'];
         },
@@ -1276,6 +1303,42 @@ const app = createApp({
             return true;
         },
 
+        mergeSiteConfigs(existingSite, importedSite) {
+            const normalizedImported = this.normalizeConfig({ imported: importedSite || {} }).imported
+            if (!normalizedImported) {
+                return existingSite || null
+            }
+
+            if (!existingSite) {
+                return normalizedImported
+            }
+
+            const normalizedExisting = this.normalizeConfig({ existing: existingSite }).existing || {
+                default_preset: '主预设',
+                presets: {}
+            }
+
+            const mergedPresets = {
+                ...(normalizedExisting.presets || {}),
+                ...(normalizedImported.presets || {})
+            }
+
+            let mergedDefault = normalizedImported.default_preset
+            if (!mergedDefault || !mergedPresets[mergedDefault]) {
+                mergedDefault = normalizedExisting.default_preset
+            }
+            if (!mergedDefault || !mergedPresets[mergedDefault]) {
+                mergedDefault = mergedPresets['主预设'] ? '主预设' : (Object.keys(mergedPresets)[0] || '主预设')
+            }
+
+            return {
+                ...normalizedExisting,
+                ...normalizedImported,
+                presets: mergedPresets,
+                default_preset: mergedDefault
+            }
+        },
+
         async executeImport() {
             if (!this.importedConfig) return;
 
@@ -1294,14 +1357,19 @@ const app = createApp({
                     return;
                 }
 
-                // 检查是否会覆盖
-                if (this.sites[domain] && this.importMode !== 'replace') {
-                    if (!confirm('站点 "' + domain + '" 已存在，是否覆盖？')) {
+                const exists = !!this.sites[domain];
+                if (exists) {
+                    const message = this.importMode === 'replace'
+                        ? '站点 "' + domain + '" 已存在，将完整替换该站点的当前配置，是否继续？'
+                        : '站点 "' + domain + '" 已存在，将按预设合并导入，同名预设会被覆盖，是否继续？';
+                    if (!confirm(message)) {
                         return;
                     }
                 }
 
-                this.sites[domain] = normalizedSite;
+                this.sites[domain] = this.importMode === 'replace'
+                    ? normalizedSite
+                    : this.mergeSiteConfigs(this.sites[domain], normalizedSite);
                 this.currentDomain = domain;
 
                 try {
@@ -1500,6 +1568,63 @@ const app = createApp({
 
             this.browserConstants = this.getBrowserConstantsDefaults();
             this.notify('已重置为默认值，请点击保存以应用', 'info');
+        },
+
+        // ========== 更新白名单 ==========
+
+        async loadUpdatePreserveSettings() {
+            this.isLoadingUpdatePreserve = true;
+            try {
+                const data = await this.apiRequest('/api/settings/update-preserve');
+                this.updatePreserveOptions = Array.isArray(data.options) ? data.options : [];
+                this.updatePreserveSelected = Array.isArray(data.selected_patterns) ? data.selected_patterns.slice() : [];
+                this.updatePreserveSelectedOriginal = JSON.parse(JSON.stringify(this.updatePreserveSelected));
+            } catch (error) {
+                console.error('加载更新白名单失败:', error);
+                this.updatePreserveOptions = [];
+                this.updatePreserveSelected = [];
+                this.updatePreserveSelectedOriginal = [];
+            } finally {
+                this.isLoadingUpdatePreserve = false;
+            }
+        },
+
+        toggleUpdatePreserve(pattern) {
+            const value = String(pattern || '').trim();
+            if (!value) return;
+            const next = new Set(this.updatePreserveSelected || []);
+            if (next.has(value)) {
+                next.delete(value);
+            } else {
+                next.add(value);
+            }
+            this.updatePreserveSelected = Array.from(next);
+        },
+
+        async saveUpdatePreserveSettings() {
+            this.isSavingUpdatePreserve = true;
+            try {
+                const data = await this.apiRequest('/api/settings/update-preserve', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        selected_patterns: this.updatePreserveSelected
+                    })
+                });
+                this.updatePreserveSelected = Array.isArray(data.selected_patterns)
+                    ? data.selected_patterns.slice()
+                    : this.updatePreserveSelected;
+                this.updatePreserveSelectedOriginal = JSON.parse(JSON.stringify(this.updatePreserveSelected));
+                this.notify('更新白名单已保存，下次自动更新生效', 'success');
+            } catch (error) {
+                this.notify('保存失败: ' + error.message, 'error');
+            } finally {
+                this.isSavingUpdatePreserve = false;
+            }
+        },
+
+        resetUpdatePreserveSettings() {
+            this.updatePreserveSelected = JSON.parse(JSON.stringify(this.updatePreserveSelectedOriginal));
+            this.notify('已恢复到上次保存的更新白名单', 'info');
         },
 
         // ========== 元素定义管理方法 ==========
@@ -1773,6 +1898,7 @@ const app = createApp({
                 await Promise.all([
                     this.loadEnvConfig(),
                     this.loadBrowserConstants(),
+                    this.loadUpdatePreserveSettings(),
                     this.loadSelectorDefinitions()
                 ]);
                 return;

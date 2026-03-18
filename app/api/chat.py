@@ -48,6 +48,22 @@ def _debug_preview(value: Any, limit: int = 240) -> str:
     return text[: limit - 3] + "..."
 
 
+def _extract_stream_error_message(chunk: Any) -> str:
+    if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        return ""
+    try:
+        data_str = chunk[6:].strip()
+        if not data_str or data_str == "[DONE]":
+            return ""
+        data = json.loads(data_str)
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return ""
+        return str(error.get("message") or "").strip()
+    except Exception:
+        return ""
+
+
 # ================= 请求模型 =================
 
 class ChatRequest(BaseModel):
@@ -285,7 +301,6 @@ async def _stream_with_lifecycle(
         )
 
         browser = get_browser(auto_connect=False)
-        browser.set_stop_checker(ctx.should_stop)
 
         request_manager.start_request(ctx)
 
@@ -296,9 +311,10 @@ async def _stream_with_lifecycle(
             chunk_counter = 0
             try:
                 gen = browser.execute_workflow(
-                    body.messages, 
+                    body.messages,
                     stream=True,
-                    task_id=ctx.request_id
+                    task_id=ctx.request_id,
+                    stop_checker=ctx.should_stop,
                 )
 
                 for chunk in gen:
@@ -306,7 +322,11 @@ async def _stream_with_lifecycle(
                     
                     
                     if ctx.should_stop():
-                        logger.info("工作线程检测到取消")
+                        cancel_reason = str(ctx.cancel_reason or "unknown")
+                        if cancel_reason in {"cleanup", "client_disconnected", "coroutine_cancelled"}:
+                            logger.debug(f"工作线程检测到停止: {cancel_reason}")
+                        else:
+                            logger.info(f"工作线程检测到取消: {cancel_reason}")
                         break
                     chunk_queue.put(chunk)
 
@@ -314,6 +334,11 @@ async def _stream_with_lifecycle(
                 logger.error(f"工作线程异常: {e}")
                 chunk_queue.put(("ERROR", str(e)))
             finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except Exception as e:
+                        logger.debug(f"关闭工作流生成器失败（忽略）: {e}")
                 chunk_queue.put(None)
                 logger.debug("工作线程结束")
 
@@ -347,6 +372,11 @@ async def _stream_with_lifecycle(
                 logger.info(f"[SEND] 发送包含图片的 chunk 给客户端")
             
             yield chunk
+            error_message = _extract_stream_error_message(chunk)
+            if error_message:
+                logger.warning(f"流式响应返回错误事件: {error_message}")
+                ctx.mark_failed(error_message)
+                break
             await asyncio.sleep(0)
 
         if not ctx.should_stop() and ctx.status == RequestStatus.RUNNING:
@@ -389,59 +419,94 @@ async def _non_stream_with_lifecycle(
     ctx: RequestContext
 ) -> JSONResponse:
     """非流式响应 + 生命周期管理"""
-    disconnect_task = None
-    try:
-        disconnect_task = asyncio.create_task(
-            watch_client_disconnect(request, ctx, check_interval=0.3)
-        )
+    collected_content = []
+    collected_images = []
+    error_data = None
 
-        browser = get_browser(auto_connect=False)
-        browser.set_stop_checker(ctx.should_stop)
-        request_manager.start_request(ctx)
+    async for chunk in _stream_with_lifecycle(request, body, ctx):
+        if isinstance(chunk, str):
+            if chunk.startswith("data: [DONE]"):
+                continue
 
-        response = await asyncio.to_thread(
-            _execute_browser_non_stream_messages,
-            browser,
-            body.messages,
-            ctx.request_id,
-        )
+            if chunk.startswith("data: "):
+                try:
+                    data_str = chunk[6:].strip()
+                    if not data_str:
+                        continue
+                    data = json.loads(data_str)
 
-        if not ctx.should_stop() and ctx.status == RequestStatus.RUNNING:
-            ctx.mark_completed()
+                    if "error" in data:
+                        error_data = data
+                        break
 
-        return JSONResponse(content=response)
+                    if "choices" in data and data["choices"]:
+                        delta = data["choices"][0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            collected_content.append(content)
+                        
+                        images = delta.get("images", [])
+                        if images:
+                            collected_images.extend(images)
+                            
+                except json.JSONDecodeError:
+                    continue
 
-    except Exception as e:
-        logger.error(f"非流式执行异常: {e}")
-        ctx.mark_failed(str(e))
-        return JSONResponse(
-            content={
-                "error": {
-                    "message": f"执行错误: {str(e)}",
-                    "type": "internal_error"
-                }
-            },
-            status_code=500
-        )
+    if error_data:
+        return JSONResponse(content=error_data, status_code=500)
 
-    finally:
-        if disconnect_task:
-            disconnect_task.cancel()
-            try:
-                await disconnect_task
-            except asyncio.CancelledError:
-                pass
+    full_content = "".join(collected_content)
+    
+    # 将图片 base64 转为 Markdown 格式嵌入 content
+    if collected_images:
+        for idx, img_b64 in enumerate(collected_images):
+            if img_b64.startswith("data:"):
+                full_content += f"\n![image_{idx}]({img_b64})"
+            else:
+                full_content += f"\n![image_{idx}](data:image/png;base64,{img_b64})"
+    
+    message = {
+        "role": "assistant",
+        "content": full_content
+    }
+    
+    # 🛡️ 兼容：保留 images 字段供特殊客户端使用
+    if collected_images:
+        message["images"] = collected_images
+    
+    response = {
+        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": body.model,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
 
-        request_manager.finish_request(ctx, success=(ctx.status == RequestStatus.COMPLETED))
+    return JSONResponse(content=response)
 
 
 def _execute_browser_non_stream_messages(
     browser,
     messages: List[Dict[str, Any]],
     request_id: str,
+    stop_checker=None,
 ) -> Dict[str, Any]:
     payload = None
-    for chunk in browser.execute_workflow(messages, stream=False, task_id=request_id):
+    for chunk in browser.execute_workflow(
+        messages,
+        stream=False,
+        task_id=request_id,
+        stop_checker=stop_checker,
+    ):
         payload = chunk
 
     if not payload:
@@ -470,6 +535,7 @@ def _run_tool_calling_sync(
     browser,
     body: ChatRequest,
     request_id: str,
+    stop_checker=None,
 ) -> Dict[str, Any]:
     tools, tool_choice = normalize_tool_request(
         tools=body.tools,
@@ -489,6 +555,7 @@ def _run_tool_calling_sync(
         browser=browser,
         messages=browser_messages,
         request_id=request_id,
+        stop_checker=stop_checker,
     )
     assistant_text = _extract_assistant_content(browser_response)
     logger.debug(f"tool_calling assistant_text={_debug_preview(assistant_text)}")
@@ -514,7 +581,6 @@ async def _complete_tool_calling_with_lifecycle(
         )
 
         browser = get_browser(auto_connect=False)
-        browser.set_stop_checker(ctx.should_stop)
         request_manager.start_request(ctx)
 
         response = await asyncio.to_thread(
@@ -522,6 +588,7 @@ async def _complete_tool_calling_with_lifecycle(
             browser,
             body,
             ctx.request_id,
+            ctx.should_stop,
         )
 
         if not ctx.should_stop() and ctx.status == RequestStatus.RUNNING:
@@ -592,6 +659,15 @@ async def _stream_tool_calling_with_lifecycle(
 def _pack_error(message: str, code: str = "error") -> str:
     """打包 SSE 错误"""
     data = {
+        "id": f"chatcmpl-error-{int(time.time() * 1000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "web-browser",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": f"[错误] {message}"},
+            "finish_reason": None
+        }],
         "error": {
             "message": message,
             "type": "execution_error",
