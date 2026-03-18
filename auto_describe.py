@@ -100,6 +100,22 @@ def save_data(data: dict) -> None:
     DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def get_or_create_record(data: dict, image_name: str) -> dict:
+    """获取或初始化单张图片的处理记录。"""
+    item = data.get(image_name)
+    if not isinstance(item, dict):
+        item = {
+            "status": "pending",
+            "description": "",
+            "describe_at": "",
+            "generate_at": "",
+            "result": "",
+            "error": ""
+        }
+        data[image_name] = item
+    return item
+
+
 def get_image_description(image_path: Path, prompt: str) -> str | None:
     """
     调用豆包API获取图片描述
@@ -253,34 +269,59 @@ def process_images():
     # 处理每张图片
     for image_path in images:
         image_name = image_path.name
+        record = get_or_create_record(data, image_name)
         print(f"\n--- 处理: {image_name} ---")
+
+        if record.get("status") == "done":
+            print(f"[跳过] 已完成")
+            continue
 
         # 第一步：获取图片描述
         description = get_existing_description(data, image_name)
         if not description:
             print(f"[步骤1] 需要获取描述")
+            record["status"] = "describing"
+            record["error"] = ""
+            save_data(data)
             description = get_image_description(image_path, doubao_prompt)
             if description:
-                data[image_name] = {
-                    "description": description,
-                    "timestamp": datetime.now().isoformat()
-                }
+                record["description"] = description
+                record["describe_at"] = datetime.now().isoformat()
+                record["status"] = "described"
+                record["error"] = ""
                 save_data(data)
                 print(f"[步骤1] 描述已保存")
             else:
+                record["status"] = "failed_describe"
+                record["error"] = "获取描述失败"
+                save_data(data)
                 print(f"[步骤1] 获取描述失败，跳过")
                 continue
         else:
             print(f"[步骤1] 已有描述: {description[:50]}...")
 
         # 第二步：生成图片
+        if record.get("status") == "done":
+            print(f"[步骤2] 跳过：已生成完成")
+            continue
+
         if description and gemini_prompt:
             print(f"[步骤2] 正在生成图片...")
+            record["status"] = "generating"
+            record["error"] = ""
+            save_data(data)
             result = generate_image(description, gemini_prompt)
             if result:
-                # 可以选择保存结果或直接输出
+                record["result"] = result
+                record["generate_at"] = datetime.now().isoformat()
+                record["status"] = "done"
+                record["error"] = ""
+                save_data(data)
                 print(f"[步骤2] 生成结果: {result[:100]}...")
             else:
+                record["status"] = "failed_generate"
+                record["error"] = "生成失败"
+                save_data(data)
                 print(f"[步骤2] 生成失败")
         else:
             if not description:
