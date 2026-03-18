@@ -40,13 +40,39 @@ DEFAULT_INTERVAL = 5
 
 # ================= 工具函数 =================
 
-def load_prompt() -> str:
-    """加载prompt.md内容"""
+def load_prompts() -> tuple[str, str]:
+    """从 prompt.md 中加载豆包和 Gemini 的提示词。"""
     if not PROMPT_FILE.exists():
         print(f"[错误] prompt.md 不存在: {PROMPT_FILE}")
-        return ""
+        return "", ""
+
     content = PROMPT_FILE.read_text(encoding="utf-8").strip()
-    return content
+    if not content:
+        return "", ""
+
+    sections: list[str] = []
+    current: list[str] = []
+
+    for line in content.splitlines():
+        if line.startswith("#"):
+            if current:
+                section = "\n".join(current).strip()
+                if section:
+                    sections.append(section)
+                current = []
+            continue
+        current.append(line)
+
+    if current:
+        section = "\n".join(current).strip()
+        if section:
+            sections.append(section)
+
+    if len(sections) < 2:
+        print(f"[错误] prompt.md 至少需要 2 个以 # 分隔的段落: {PROMPT_FILE}")
+        return "", ""
+
+    return sections[0], sections[1]
 
 
 def list_images() -> list[Path]:
@@ -74,7 +100,7 @@ def save_data(data: dict) -> None:
     DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def get_image_description(image_path: Path) -> str | None:
+def get_image_description(image_path: Path, prompt: str) -> str | None:
     """
     调用豆包API获取图片描述
     """
@@ -86,7 +112,7 @@ def get_image_description(image_path: Path) -> str | None:
     messages = [{
         "role": "user",
         "content": [
-            {"type": "text", "text": "请详细描述这张图片的内容。"},
+            {"type": "text", "text": prompt},
             {
                 "type": "image_url",
                 "image_url": {
@@ -132,7 +158,7 @@ def generate_image(description: str, prompt: str) -> str | None:
     print(f"[Gemini] 正在生成图片...")
 
     # 构建消息：将描述和prompt结合
-    combined_prompt = f"{description}\n\n{prompt}"
+    combined_prompt = f"{prompt}\n{description}"
 
     messages = [{
         "role": "user",
@@ -169,13 +195,27 @@ def generate_image(description: str, prompt: str) -> str | None:
         return None
 
 
-# ================= 步骤 1：设置间隔 =================
+# ================= 步骤 1：设置并启动 =================
+
+def get_existing_description(data: dict, image_name: str) -> str:
+    """返回已保存的有效描述；空值或异常结构视为不存在"""
+    item = data.get(image_name)
+    if not isinstance(item, dict):
+        return ""
+    description = item.get("description", "")
+    if not isinstance(description, str):
+        return ""
+    return description.strip()
 
 def ask_interval() -> int:
     """询问定时间隔，默认 5 分钟"""
-    print("\n" + "54")
-    print("  [步骤 1/2]  设置定时间隔")
+    print("\n" + "=" * 54)
+    print("  [步骤 1/1]  设置定时间隔并启动")
     print("=" * 54)
+    print(f"  图片目录: {AUTO_DESCRIBE_DIR}")
+    print(f"  数据文件: {DATA_FILE}")
+    print(f"  Prompt文件: {PROMPT_FILE}")
+    print("-" * 54)
     print("  直接回车 = 默认 5 分钟")
     while True:
         raw = input("  请输入间隔分钟数 [5]: ").strip()
@@ -187,31 +227,6 @@ def ask_interval() -> int:
             print(f"  → 每 {minutes} 分钟检测一次")
             return minutes
         print("  [提示] 请输入正整数")
-
-
-# ================= 步骤 2：确认启动 =================
-
-def ask_start() -> bool:
-    """确认是否启动"""
-    print("\n" + "=" * 54)
-    print("  [步骤 2/2]  确认启动")
-    print("=" * 54)
-    print(f"  图片目录: {AUTO_DESCRIBE_DIR}")
-    print(f"  数据文件: {DATA_FILE}")
-    print(f"  Prompt文件: {PROMPT_FILE}")
-    print("-" * 54)
-    print("  y       启动定时检测")
-    print("  n       退出程序")
-    print("=" * 54)
-
-    while True:
-        choice = input("  请输入 [y/n]: ").strip().lower()
-        if choice == "y":
-            return True
-        if choice == "n":
-            return False
-        print("  [提示] 请输入 y 或 n")
-
 
 # ================= 主处理流程 =================
 
@@ -232,8 +247,8 @@ def process_images():
         print("[提示] 没有找到图片")
         return
 
-    # 加载prompt
-    prompt = load_prompt()
+    # 加载 prompt
+    doubao_prompt, gemini_prompt = load_prompts()
 
     # 处理每张图片
     for image_path in images:
@@ -241,9 +256,10 @@ def process_images():
         print(f"\n--- 处理: {image_name} ---")
 
         # 第一步：获取图片描述
-        if image_name not in data:
+        description = get_existing_description(data, image_name)
+        if not description:
             print(f"[步骤1] 需要获取描述")
-            description = get_image_description(image_path)
+            description = get_image_description(image_path, doubao_prompt)
             if description:
                 data[image_name] = {
                     "description": description,
@@ -255,13 +271,12 @@ def process_images():
                 print(f"[步骤1] 获取描述失败，跳过")
                 continue
         else:
-            description = data[image_name].get("description", "")
             print(f"[步骤1] 已有描述: {description[:50]}...")
 
         # 第二步：生成图片
-        if description and prompt:
+        if description and gemini_prompt:
             print(f"[步骤2] 正在生成图片...")
-            result = generate_image(description, prompt)
+            result = generate_image(description, gemini_prompt)
             if result:
                 # 可以选择保存结果或直接输出
                 print(f"[步骤2] 生成结果: {result[:100]}...")
@@ -270,7 +285,7 @@ def process_images():
         else:
             if not description:
                 print(f"[步骤2] 跳过：无描述")
-            if not prompt:
+            if not gemini_prompt:
                 print(f"[步骤2] 跳过：无prompt")
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== 检测完成 =====")
@@ -329,11 +344,6 @@ def main():
 
     # 步骤 1：设置间隔
     interval = ask_interval()
-
-    # 步骤 2：确认启动
-    if not ask_start():
-        print("\n[退出] 程序结束")
-        return
 
     # 启动循环
     print(f"\n[开始] 每 {interval} 分钟检测一次")
