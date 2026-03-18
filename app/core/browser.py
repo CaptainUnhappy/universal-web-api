@@ -35,6 +35,7 @@ from app.utils.image_handler import extract_images_from_messages
 from app.utils.site_url import extract_remote_site_domain
 from app.core.workflow import WorkflowExecutor
 from app.core.tab_pool import TabPoolManager, TabSession, get_clipboard_lock
+from app.core.elements import ElementFinder
 
 
 # ================= 配置加载 =================
@@ -245,6 +246,76 @@ class BrowserCore:
                 prompt_parts.append(f"{role}: {text}")
         
         return "\n\n".join(prompt_parts)
+
+    @staticmethod
+    def _count_cjk_chars(text: str) -> int:
+        total = 0
+        for ch in text or "":
+            code = ord(ch)
+            if 0x4E00 <= code <= 0x9FFF:
+                total += 1
+        return total
+
+    def _extract_final_dom_text(
+        self,
+        session: TabSession,
+        preset_name: Optional[str] = None,
+    ) -> str:
+        try:
+            tab = session.tab
+            domain = extract_remote_site_domain(tab.url)
+            if not domain:
+                return ""
+
+            config_engine = self._get_config_engine()
+            effective_preset_name = preset_name if preset_name is not None else session.preset_name
+            site_config = config_engine.get_site_config(domain, tab.html, preset_name=effective_preset_name)
+            if not site_config:
+                return ""
+
+            selector = (site_config.get("selectors", {}) or {}).get("result_container", "")
+            if not selector:
+                return ""
+
+            finder = ElementFinder(tab)
+            elements = finder.find_all(selector, timeout=1)
+            if not elements:
+                return ""
+
+            extractor = config_engine.get_site_extractor(domain, preset_name=effective_preset_name)
+            text = extractor.extract_text(elements[-1]) if extractor else ""
+            return str(text or "").strip()
+        except Exception as e:
+            logger.debug(f"[{session.id}] 提取最终 DOM 文本失败: {e}")
+            return ""
+
+    def _should_prefer_dom_text(
+        self,
+        session: TabSession,
+        api_text: str,
+        dom_text: str,
+    ) -> bool:
+        if not dom_text:
+            return False
+        if not api_text:
+            return True
+
+        domain = ""
+        try:
+            domain = extract_remote_site_domain(session.tab.url)
+        except Exception:
+            pass
+
+        api_cjk = self._count_cjk_chars(api_text)
+        dom_cjk = self._count_cjk_chars(dom_text)
+
+        if domain == "www.doubao.com":
+            if dom_cjk >= api_cjk + 8:
+                return True
+            if len(dom_text) >= len(api_text) + 20:
+                return True
+
+        return False
     def _get_upload_history_images_flag(self, default: bool = True) -> bool:
         """
         获取是否上传历史对话图片的开关。
@@ -1023,6 +1094,13 @@ class BrowserCore:
             yield json.dumps(error_data, ensure_ascii=False)
         else:
             full_content = "".join(collected_content)
+            dom_text = self._extract_final_dom_text(session, preset_name=preset_name)
+            if self._should_prefer_dom_text(session, full_content, dom_text):
+                logger.info(
+                    f"[{session.id}] 非流式响应已切换为 DOM 最终文本 "
+                    f"(api_len={len(full_content)}, dom_len={len(dom_text)})"
+                )
+                full_content = dom_text
             response = self.formatter.pack_non_stream(full_content)
             yield json.dumps(response, ensure_ascii=False)
 

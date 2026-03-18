@@ -389,79 +389,50 @@ async def _non_stream_with_lifecycle(
     ctx: RequestContext
 ) -> JSONResponse:
     """非流式响应 + 生命周期管理"""
-    collected_content = []
-    collected_images = []
-    error_data = None
+    disconnect_task = None
+    try:
+        disconnect_task = asyncio.create_task(
+            watch_client_disconnect(request, ctx, check_interval=0.3)
+        )
 
-    async for chunk in _stream_with_lifecycle(request, body, ctx):
-        if isinstance(chunk, str):
-            if chunk.startswith("data: [DONE]"):
-                continue
+        browser = get_browser(auto_connect=False)
+        browser.set_stop_checker(ctx.should_stop)
+        request_manager.start_request(ctx)
 
-            if chunk.startswith("data: "):
-                try:
-                    data_str = chunk[6:].strip()
-                    if not data_str:
-                        continue
-                    data = json.loads(data_str)
+        response = await asyncio.to_thread(
+            _execute_browser_non_stream_messages,
+            browser,
+            body.messages,
+            ctx.request_id,
+        )
 
-                    if "error" in data:
-                        error_data = data
-                        break
+        if not ctx.should_stop() and ctx.status == RequestStatus.RUNNING:
+            ctx.mark_completed()
 
-                    if "choices" in data and data["choices"]:
-                        delta = data["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            collected_content.append(content)
-                        
-                        images = delta.get("images", [])
-                        if images:
-                            collected_images.extend(images)
-                            
-                except json.JSONDecodeError:
-                    continue
+        return JSONResponse(content=response)
 
-    if error_data:
-        return JSONResponse(content=error_data, status_code=500)
+    except Exception as e:
+        logger.error(f"非流式执行异常: {e}")
+        ctx.mark_failed(str(e))
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"执行错误: {str(e)}",
+                    "type": "internal_error"
+                }
+            },
+            status_code=500
+        )
 
-    full_content = "".join(collected_content)
-    
-    # 将图片 base64 转为 Markdown 格式嵌入 content
-    if collected_images:
-        for idx, img_b64 in enumerate(collected_images):
-            if img_b64.startswith("data:"):
-                full_content += f"\n![image_{idx}]({img_b64})"
-            else:
-                full_content += f"\n![image_{idx}](data:image/png;base64,{img_b64})"
-    
-    message = {
-        "role": "assistant",
-        "content": full_content
-    }
-    
-    # 🛡️ 兼容：保留 images 字段供特殊客户端使用
-    if collected_images:
-        message["images"] = collected_images
-    
-    response = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": body.model,
-        "choices": [{
-            "index": 0,
-            "message": message,
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
-    }
+    finally:
+        if disconnect_task:
+            disconnect_task.cancel()
+            try:
+                await disconnect_task
+            except asyncio.CancelledError:
+                pass
 
-    return JSONResponse(content=response)
+        request_manager.finish_request(ctx, success=(ctx.status == RequestStatus.COMPLETED))
 
 
 def _execute_browser_non_stream_messages(

@@ -512,108 +512,9 @@
           "threshold": 50000,
           "hint_text": "完全专注于文件内容"
         }
-      },
-      "图片提取": {
-        "selectors": {
-          "input_box": "rich-textarea .ql-editor[contenteditable=\"true\"][role=\"textbox\"]",
-          "send_btn": "button.send-button",
-          "result_container": ".markdown-main-panel",
-          "new_chat_btn": "button.temp-chat-button",
-          "message_wrapper": null,
-          "generating_indicator": "",
-          "点击模型选择": "[data-test-id=\"logo-pill-label-container\"]",
-          "选择模型": ".mat-mdc-menu-item:nth-of-type(3)"
-        },
-        "stream_config": {
-          "mode": "network",
-          "hard_timeout": 600,
-          "silence_threshold": 2.5,
-          "initial_wait": 30,
-          "enable_wrapper_search": true,
-          "network": {
-            "listen_pattern": "StreamGenerate",
-            "parser": "gemini",
-            "first_response_timeout": 300,
-            "silence_threshold": 3,
-            "response_interval": 1
-          }
-        },
-        "workflow": [
-          {
-            "action": "CLICK",
-            "target": "new_chat_btn",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "WAIT",
-            "target": "",
-            "optional": false,
-            "value": 0.5
-          },
-          {
-            "action": "CLICK",
-            "target": "new_chat_btn",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "CLICK",
-            "target": "点击模型选择",
-            "optional": false,
-            "value": null
-          },
-          {
-            "action": "CLICK",
-            "target": "选择模型",
-            "optional": false,
-            "value": null
-          },
-          {
-            "action": "WAIT",
-            "target": "",
-            "optional": false,
-            "value": 0.5
-          },
-          {
-            "action": "FILL_INPUT",
-            "target": "input_box",
-            "optional": false,
-            "value": null
-          },
-          {
-            "action": "CLICK",
-            "target": "send_btn",
-            "optional": false,
-            "value": null
-          },
-          {
-            "action": "STREAM_WAIT",
-            "target": "result_container",
-            "optional": false,
-            "value": null
-          }
-        ],
-        "stealth": false,
-        "image_extraction": {
-          "enabled": true,
-          "selector": "img",
-          "container_selector": ".image-button img",
-          "debounce_seconds": 1,
-          "wait_for_load": true,
-          "load_timeout_seconds": 10,
-          "download_blobs": true,
-          "max_size_mb": 10,
-          "mode": "first"
-        },
-        "file_paste": {
-          "enabled": false,
-          "threshold": 50000,
-          "hint_text": "完全专注于文件内容"
-        }
       }
     },
-    "default_preset": "图片提取"
+    "default_preset": "主预设"
   },
   "chat.deepseek.com": {
     "presets": {
@@ -755,105 +656,6 @@
           "enabled": true,
           "threshold": 50000,
           "hint_text": "完全专注于文件内容"
-        }
-      },
-      "图片提取": {
-        "selectors": {
-          "input_box": "textarea[data-testid=\"chat_input_input\"]",
-          "send_btn": "button[data-testid=\"chat_input_send_button\"]",
-          "result_container": "[data-testid=\"message_content\"]",
-          "new_chat_btn": "[data-testid=\"create_conversation_button\"]",
-          "image_wrapper": "[data-testid=\"message_image_content\"]",
-          "thinking-action-button": "[data-testid=\"deep-thinking-action-button\"]",
-          "thinking-mode": "[data-testid=\"deep-thinking-action-item-1\"]"
-        },
-        "workflow": [
-          {
-            "action": "CLICK",
-            "target": "new_chat_btn",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "WAIT",
-            "target": "",
-            "optional": true,
-            "value": "0.5"
-          },
-          {
-            "action": "CLICK",
-            "target": "thinking-action-button",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "CLICK",
-            "target": "thinking-mode",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "FILL_INPUT",
-            "target": "input_box",
-            "optional": false,
-            "value": null
-          },
-          {
-            "action": "CLICK",
-            "target": "send_btn",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "KEY_PRESS",
-            "target": "Enter",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "STREAM_WAIT",
-            "target": "result_container",
-            "optional": true,
-            "value": null
-          },
-          {
-            "action": "STREAM_WAIT",
-            "target": "image_wrapper",
-            "optional": false,
-            "value": null
-          }
-        ],
-        "stealth": false,
-        "image_extraction": {
-          "enabled": true,
-          "selector": "img",
-          "container_selector": ".image-box-grid-EYaIcP img.image-Q7dBqW",
-          "debounce_seconds": 5,
-          "wait_for_load": true,
-          "load_timeout_seconds": 60,
-          "download_blobs": true,
-          "max_size_mb": 10,
-          "mode": "all"
-        },
-        "file_paste": {
-          "enabled": true,
-          "threshold": 50000,
-          "hint_text": "完全专注于文件内容"
-        }
-      }
-    },
-    "default_preset": "图片提取"
-  },
-  "h2ogpte.genai.h2o.ai": {
-    "presets": {
-      "主预设": {
-        "selectors": {
-          "input_box": "textarea[placeholder=\"Ask anything\"]",
-          "send_btn": ".shadow-chat-input button.bg-primary-400",
-          "result_container": ".group.items-start .prose",
-          "new_chat_btn": ".w-72 .fa-pen-to-square",
-          "message_wrapper": null,
-          "generating_indicator": null
         },
         "stream_config": {
           "mode": "network",
@@ -1450,5 +1252,83 @@
       }
     },
     "default_preset": "主预设"
+  },
+  "www.google.com": {
+    "default_preset": "主预设",
+    "presets": {
+      "主预设": {
+        "selectors": {
+          "input_box": "textarea",
+          "send_btn": "button[type=\"submit\"]",
+          "result_container": "div",
+          "new_chat_btn": null,
+          "message_wrapper": null,
+          "generating_indicator": null,
+          "upload_btn": null,
+          "file_input": "input[type=\"file\"]",
+          "drop_zone": null
+        },
+        "workflow": [
+          {
+            "action": "CLICK",
+            "target": "new_chat_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "WAIT",
+            "target": "",
+            "optional": false,
+            "value": "0.5"
+          },
+          {
+            "action": "FILL_INPUT",
+            "target": "input_box",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "send_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "KEY_PRESS",
+            "target": "Enter",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "STREAM_WAIT",
+            "target": "result_container",
+            "optional": false,
+            "value": null
+          }
+        ],
+        "stealth": false,
+        "stream_config": {
+          "silence_threshold": 2.5,
+          "initial_wait": 30.0,
+          "enable_wrapper_search": true
+        },
+        "image_extraction": {
+          "enabled": false,
+          "selector": "img",
+          "container_selector": null,
+          "debounce_seconds": 2.0,
+          "wait_for_load": true,
+          "load_timeout_seconds": 5.0,
+          "download_blobs": true,
+          "max_size_mb": 10,
+          "mode": "all"
+        },
+        "file_paste": {
+          "enabled": false,
+          "threshold": 50000,
+          "hint_text": "完全专注于文件内容"
+        }
+      }
+    }
   }
 }

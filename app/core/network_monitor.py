@@ -272,15 +272,30 @@ class NetworkMonitor:
             return ""
 
         parts = []
+        byte_buffer = bytearray()
+
+        def flush_bytes() -> None:
+            if not byte_buffer:
+                return
+            try:
+                parts.append(bytes(byte_buffer).decode("utf-8", errors="ignore"))
+            except Exception:
+                parts.append(bytes(byte_buffer).decode("utf-8", errors="replace"))
+            byte_buffer.clear()
+
         for chunk in chunks:
             data = NetworkMonitor._nested_get(chunk, "data")
             if data in (None, ""):
                 continue
             if isinstance(data, (bytes, bytearray)):
-                data = data.decode("utf-8", errors="ignore")
-            elif not isinstance(data, str):
+                byte_buffer.extend(data)
+                continue
+            flush_bytes()
+            if not isinstance(data, str):
                 data = str(data)
             parts.append(data)
+
+        flush_bytes()
         return "".join(parts)
 
     @staticmethod
