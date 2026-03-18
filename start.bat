@@ -562,8 +562,8 @@ if /I "%PROXY_ENABLED%"=="true" (
     )
 )
 
-REM 启动浏览器
-start "" "!BROWSER_EXE!" !BROWSER_ARGS! about:blank
+REM 启动浏览器（同时打开 doubao 和 gemini）
+start "" "!BROWSER_EXE!" !BROWSER_ARGS! --new-window "https://www.doubao.com" "https://gemini.google.com"
 
 REM 等待端口就绪
 echo [INFO] 等待 !BROWSER_NAME! 就绪...

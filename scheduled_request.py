@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 # ================= 配置 =================
 
-API_URL    = "http://localhost:8199/v1/chat/completions"
+API_URL    = "http://127.0.0.1:8199/tab/1/v1/chat/completions"
 PROMPT_FILE = Path(__file__).parent / "prompt.md"
 IMAGE_DIR   = Path(__file__).parent / "image"
 

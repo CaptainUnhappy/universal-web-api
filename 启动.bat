@@ -1,14 +1,50 @@
 @echo off
 chcp 65001 >nul
-title Universal Web-API 定时图片请求
 
 set "SCRIPT_DIR=%~dp0"
 set "VENV_PYTHON=%SCRIPT_DIR%venv\Scripts\python.exe"
-set "SCRIPT=%SCRIPT_DIR%scheduled_request.py"
+set "SCHEDULED_SCRIPT=%SCRIPT_DIR%scheduled_request.py"
+set "AUTO_DESCRIBE_SCRIPT=%SCRIPT_DIR%auto_describe.py"
 set "START_BAT=%SCRIPT_DIR%start.bat"
 
+:: ============================================================
+:: 选择模式
+:: ============================================================
 echo ============================================================
-echo   Universal Web-API 定时图片请求工具
+echo   Universal Web-API 工具选择
+echo ============================================================
+echo.
+echo   请选择模式:
+echo.
+echo   1. 定时图片请求（定时向AI发送图片）
+echo   2. 自动描述图片（自动描述图片并生成新图片）
+echo.
+echo ============================================================
+
+:select_mode
+set /p MODE_CHOICE="请输入选项 [1/2]: "
+if "%MODE_CHOICE%"=="1" goto mode_scheduled
+if "%MODE_CHOICE%"=="2" goto mode_auto_describe
+echo [提示] 请输入 1 或 2
+goto select_mode
+
+:mode_scheduled
+title Universal Web-API 定时图片请求
+set "SCRIPT=%SCHEDULED_SCRIPT%"
+set "MODE_NAME=定时图片请求"
+goto start_script
+
+:mode_auto_describe
+title Universal Web-API 自动描述图片
+set "SCRIPT=%AUTO_DESCRIBE_SCRIPT%"
+set "MODE_NAME=自动描述图片"
+goto start_script
+
+:start_script
+
+echo.
+echo ============================================================
+echo   Universal Web-API %MODE_NAME%工具
 echo ============================================================
 echo.
 

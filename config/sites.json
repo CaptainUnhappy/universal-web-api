@@ -512,9 +512,108 @@
           "threshold": 50000,
           "hint_text": "完全专注于文件内容"
         }
+      },
+      "图片提取": {
+        "selectors": {
+          "input_box": "rich-textarea .ql-editor[contenteditable=\"true\"][role=\"textbox\"]",
+          "send_btn": "button.send-button",
+          "result_container": ".markdown-main-panel",
+          "new_chat_btn": "button.temp-chat-button",
+          "message_wrapper": null,
+          "generating_indicator": "",
+          "点击模型选择": "[data-test-id=\"logo-pill-label-container\"]",
+          "选择模型": ".mat-mdc-menu-item:nth-of-type(3)"
+        },
+        "stream_config": {
+          "mode": "network",
+          "hard_timeout": 600,
+          "silence_threshold": 2.5,
+          "initial_wait": 30,
+          "enable_wrapper_search": true,
+          "network": {
+            "listen_pattern": "StreamGenerate",
+            "parser": "gemini",
+            "first_response_timeout": 300,
+            "silence_threshold": 3,
+            "response_interval": 1
+          }
+        },
+        "workflow": [
+          {
+            "action": "CLICK",
+            "target": "new_chat_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "WAIT",
+            "target": "",
+            "optional": false,
+            "value": 0.5
+          },
+          {
+            "action": "CLICK",
+            "target": "new_chat_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "点击模型选择",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "选择模型",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "WAIT",
+            "target": "",
+            "optional": false,
+            "value": 0.5
+          },
+          {
+            "action": "FILL_INPUT",
+            "target": "input_box",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "send_btn",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "STREAM_WAIT",
+            "target": "result_container",
+            "optional": false,
+            "value": null
+          }
+        ],
+        "stealth": false,
+        "image_extraction": {
+          "enabled": true,
+          "selector": "img",
+          "container_selector": ".image-button img",
+          "debounce_seconds": 1,
+          "wait_for_load": true,
+          "load_timeout_seconds": 10,
+          "download_blobs": true,
+          "max_size_mb": 10,
+          "mode": "first"
+        },
+        "file_paste": {
+          "enabled": false,
+          "threshold": 50000,
+          "hint_text": "完全专注于文件内容"
+        }
       }
     },
-    "default_preset": "主预设"
+    "default_preset": "图片提取"
   },
   "chat.deepseek.com": {
     "presets": {
@@ -720,7 +819,7 @@
           {
             "action": "STREAM_WAIT",
             "target": "image_wrapper",
-            "optional": true,
+            "optional": false,
             "value": null
           }
         ],
