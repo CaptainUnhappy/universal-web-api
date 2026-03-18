@@ -643,7 +643,7 @@
         ],
         "stealth": false,
         "image_extraction": {
-          "enabled": false,
+          "enabled": true,
           "selector": "img",
           "container_selector": ".image-box-grid-EYaIcP img.image-Q7dBqW",
           "debounce_seconds": 2,
