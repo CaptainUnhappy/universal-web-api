@@ -335,52 +335,53 @@ async def _non_stream_with_tab_index(
     tab_index: int
 ) -> JSONResponse:
     """使用指定标签页的非流式响应"""
-    collected_content = []
-    error_data = None
+    disconnect_task = None
+    try:
+        disconnect_task = asyncio.create_task(
+            watch_client_disconnect(request, ctx, check_interval=0.3)
+        )
 
-    async for chunk in _stream_with_tab_index(request, body, ctx, tab_index):
-        if isinstance(chunk, str):
-            if chunk.startswith("data: [DONE]"):
-                continue
+        browser = get_browser(auto_connect=False)
+        request_manager.start_request(ctx)
 
-            if chunk.startswith("data: "):
-                try:
-                    data_str = chunk[6:].strip()
-                    if not data_str:
-                        continue
-                    data = json.loads(data_str)
+        response = await asyncio.to_thread(
+            _execute_browser_non_stream_for_tab,
+            browser,
+            tab_index,
+            body.messages,
+            ctx.request_id,
+            ctx.should_stop,
+        )
 
-                    if "error" in data:
-                        error_data = data
-                        break
+        if not ctx.should_stop() and ctx.status == RequestStatus.RUNNING:
+            ctx.mark_completed()
 
-                    if "choices" in data and data["choices"]:
-                        delta = data["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            collected_content.append(content)
+        return JSONResponse(content=response)
 
-                except json.JSONDecodeError:
-                    continue
-
-    if error_data:
-        return JSONResponse(content=error_data, status_code=500)
-
-    full_content = "".join(collected_content)
-    response = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": body.model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": full_content},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
-
-    return JSONResponse(content=response)
+    except asyncio.CancelledError:
+        ctx.request_cancel("coroutine_cancelled")
+        raise
+    except Exception as e:
+        logger.error(f"非流式执行失败(tab={tab_index}): {e}")
+        ctx.mark_failed(str(e))
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"执行错误: {e}",
+                    "type": "execution_error",
+                    "code": "non_stream_failed",
+                }
+            },
+            status_code=500,
+        )
+    finally:
+        if disconnect_task:
+            disconnect_task.cancel()
+            try:
+                await disconnect_task
+            except asyncio.CancelledError:
+                pass
+        request_manager.finish_request(ctx, success=(ctx.status == RequestStatus.COMPLETED))
 
 
 def _execute_browser_non_stream_for_tab(

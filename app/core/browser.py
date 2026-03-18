@@ -31,6 +31,7 @@ from app.core.config import (
     SSEFormatter,
     MessageValidator,
 )
+from app.core.elements import ElementFinder
 from app.utils.image_handler import extract_images_from_messages
 from app.utils.site_url import extract_remote_site_domain
 from app.core.workflow import WorkflowExecutor
@@ -359,6 +360,76 @@ class BrowserCore:
             from app.services.config_engine import config_engine
             self.config_engine = config_engine
         return self.config_engine
+
+    @staticmethod
+    def _count_cjk_chars(text: str) -> int:
+        total = 0
+        for ch in text or "":
+            code = ord(ch)
+            if 0x4E00 <= code <= 0x9FFF:
+                total += 1
+        return total
+
+    @classmethod
+    def _should_prefer_dom_text(cls, api_text: str, dom_text: str) -> bool:
+        if not dom_text:
+            return False
+        if not api_text:
+            return True
+        if cls._count_cjk_chars(dom_text) >= cls._count_cjk_chars(api_text) + 8:
+            return True
+        if len(dom_text) >= len(api_text) + 20:
+            return True
+        return False
+
+    def _extract_final_dom_text(
+        self,
+        session: TabSession,
+        preset_name: Optional[str] = None,
+    ) -> str:
+        tab = session.tab
+        try:
+            domain = str(getattr(session, "current_domain", "") or "").strip()
+            if not domain:
+                domain = extract_remote_site_domain(tab.url)
+
+            config_engine = self._get_config_engine()
+            effective_preset_name = preset_name if preset_name is not None else session.preset_name
+            site_config = config_engine.get_site_config(
+                domain,
+                tab.html,
+                preset_name=effective_preset_name,
+            )
+            if not site_config:
+                return ""
+
+            selectors = site_config.get("selectors", {}) or {}
+            result_selector = str(selectors.get("result_container", "") or "").strip()
+            if not result_selector:
+                return ""
+
+            extractor = config_engine.get_site_extractor(
+                domain,
+                preset_name=effective_preset_name,
+            )
+            finder = ElementFinder(tab)
+
+            best_text = ""
+            for _ in range(10):
+                elements = finder.find_all(result_selector, timeout=0.5)
+                if elements:
+                    try:
+                        text = str(extractor.extract_text(elements[-1]) or "")
+                    except Exception:
+                        text = ""
+                    if len(text) > len(best_text):
+                        best_text = text
+                time.sleep(0.15)
+
+            return best_text
+        except Exception as e:
+            logger.debug(f"[{session.id}] 提取最终 DOM 文本失败（忽略）: {e}")
+            return ""
     
     def _connect(self) -> bool:
         try:
@@ -1198,6 +1269,7 @@ class BrowserCore:
     ) -> Generator[str, None, None]:
         """非流式工作流执行"""
         collected_content = []
+        collected_images = []
         error_data = None
         
         for chunk in self._execute_workflow_stream(
@@ -1226,6 +1298,9 @@ class BrowserCore:
                         content = delta.get("content", "")
                         if content:
                             collected_content.append(content)
+                        images = delta.get("images", [])
+                        if images:
+                            collected_images.extend(images)
                 except json.JSONDecodeError:
                     continue
         
@@ -1233,7 +1308,26 @@ class BrowserCore:
             yield json.dumps(error_data, ensure_ascii=False)
         else:
             full_content = "".join(collected_content)
+            dom_text = self._extract_final_dom_text(session, preset_name=preset_name)
+            if self._should_prefer_dom_text(full_content, dom_text):
+                logger.info(
+                    f"[{session.id}] 非流式结果切换为 DOM 文本 "
+                    f"(api_len={len(full_content)}, dom_len={len(dom_text)})"
+                )
+                full_content = dom_text
+            if collected_images:
+                for idx, image in enumerate(collected_images):
+                    image_url = str(image.get("url") or "").strip() if isinstance(image, dict) else ""
+                    if not image_url:
+                        continue
+                    full_content += f"\n![image_{idx}]({image_url})"
+
             response = self.formatter.pack_non_stream(full_content)
+            if collected_images:
+                try:
+                    response["choices"][0]["message"]["images"] = collected_images
+                except Exception:
+                    pass
             yield json.dumps(response, ensure_ascii=False)
 
     def _download_url_images(self, images: List[Dict], tab=None) -> List[Dict]:
