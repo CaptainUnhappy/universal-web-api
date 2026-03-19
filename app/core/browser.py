@@ -725,6 +725,7 @@ class BrowserCore:
         
         config_engine = self._get_config_engine()
         effective_preset_name = preset_name if preset_name is not None else session.preset_name
+        resolved_preset_name = effective_preset_name or config_engine.get_default_preset(domain) or "主预设"
         site_config = config_engine.get_site_config(domain, tab.html, preset_name=effective_preset_name)
         if not site_config:
             yield self.formatter.pack_error(
@@ -792,14 +793,14 @@ class BrowserCore:
         }
         
         extractor = config_engine.get_site_extractor(domain, preset_name=effective_preset_name)
-        logger.debug(f"[{session.id}] 使用提取器: {extractor.get_id()} [预设: {effective_preset_name or '主预设'}]")
+        logger.debug(f"[{session.id}] 使用提取器: {extractor.get_id()} [预设: {resolved_preset_name}]")
 
         if command_engine is not None:
             try:
                 workflow_runtime = command_engine.begin_workflow_runtime(
                     session,
                     task_id=str(getattr(session, "current_task_id", "") or ""),
-                    preset_name=effective_preset_name or "",
+                    preset_name=resolved_preset_name,
                     priority=workflow_priority_value,
                 )
             except Exception as e:

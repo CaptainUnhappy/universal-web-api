@@ -87,6 +87,26 @@ window.TabPoolTabComponent = {
             return url.length > maxLen ? url.substring(0, maxLen) + '...' : url;
         },
 
+        getDefaultPresetOptionValue() {
+            return '__DEFAULT__';
+        },
+
+        getDefaultPresetLabel(tab) {
+            const fallback = tab.default_preset || tab.effective_preset_name || '主预设';
+            return `跟随站点默认（${fallback}）`;
+        },
+
+        getDisplayedPreset(tab) {
+            return tab.effective_preset_name || tab.preset_name || tab.default_preset || '主预设';
+        },
+
+        getPresetStatusText(tab) {
+            if (tab.is_using_default_preset) {
+                return '当前生效: ' + this.getDisplayedPreset(tab) + '（跟随站点默认）';
+            }
+            return '当前生效: ' + this.getDisplayedPreset(tab) + '（手动指定）';
+        },
+
         async changePreset(tab, newPresetName) {
             const tabIndex = tab.persistent_index;
             this.presetUpdating = { ...this.presetUpdating, [tabIndex]: true };
@@ -104,7 +124,10 @@ window.TabPoolTabComponent = {
 
                 if (!response.ok) throw new Error('HTTP ' + response.status);
 
-                this.$emit('notify', { type: 'success', message: '预设已切换: ' + newPresetName });
+                const presetLabel = newPresetName === this.getDefaultPresetOptionValue()
+                    ? this.getDefaultPresetLabel(tab)
+                    : newPresetName;
+                this.$emit('notify', { type: 'success', message: '预设已切换: ' + presetLabel });
                 await this.fetchTabs();
             } catch (e) {
                 this.$emit('notify', { type: 'error', message: '切换预设失败: ' + e.message });
@@ -147,7 +170,9 @@ window.TabPoolTabComponent = {
         },
 
         getCurrentPreset(tab) {
-            return tab.preset_name || '主预设';
+            return tab.is_using_default_preset
+                ? this.getDefaultPresetOptionValue()
+                : (tab.preset_name || '主预设');
         }
     },
     mounted() {
@@ -260,6 +285,9 @@ window.TabPoolTabComponent = {
                                         @change="changePreset(tab, $event.target.value)"
                                         :disabled="presetUpdating[tab.persistent_index]"
                                         class="text-xs border dark:border-gray-600 px-2 py-1 rounded bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-blue-400 focus:border-transparent disabled:opacity-50 min-w-[100px]">
+                                    <option :value="getDefaultPresetOptionValue()">
+                                        {{ getDefaultPresetLabel(tab) }}
+                                    </option>
                                     <option v-for="preset in tab.available_presets" :key="preset" :value="preset">
                                         {{ preset }}
                                     </option>
@@ -268,8 +296,11 @@ window.TabPoolTabComponent = {
                                     切换中...
                                 </span>
                             </div>
+                            <div v-if="tab.available_presets && tab.available_presets.length > 0" class="mt-1">
+                                <span class="text-xs text-gray-400 dark:text-gray-500">{{ getPresetStatusText(tab) }}</span>
+                            </div>
                             <div v-else-if="tab.current_domain" class="mt-2">
-                                <span class="text-xs text-gray-400 dark:text-gray-500">🎛️ 预设: 主预设（仅有一个）</span>
+                                <span class="text-xs text-gray-400 dark:text-gray-500">🎛️ 预设: {{ getDisplayedPreset(tab) }}（仅有一个）</span>
                             </div>
                         </div>
 

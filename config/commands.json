@@ -2,7 +2,7 @@
   "commands": [
     {
       "name": "自动清除 Cookie",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "request_count",
@@ -50,7 +50,7 @@
     },
     {
       "name": "网络错误闭环恢复",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "network_request_error",
@@ -133,7 +133,7 @@
     },
     {
       "name": "清除cookie后恢复",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -172,40 +172,8 @@
       "group_name": "竞技场命令"
     },
     {
-      "name": "NEW_COMMAND",
-      "enabled": false,
-      "mode": "simple",
-      "trigger": {
-        "type": "request_count",
-        "value": 10,
-        "scope": "all",
-        "domain": "",
-        "tab_index": null,
-        "command_id": "",
-        "periodic_enabled": true,
-        "periodic_interval_sec": 8.0,
-        "periodic_jitter_sec": 2.0
-      },
-      "actions": [
-        {
-          "type": "switch_proxy",
-          "clash_api": "http://127.0.0.1:9097",
-          "clash_secret": "1",
-          "selector": "high_quality_round_robin",
-          "mode": "round_robin",
-          "node_name": "",
-          "exclude_keywords": "DIRECT,REJECT,GLOBAL,自动选择,故障转移",
-          "refresh_after": true
-        }
-      ],
-      "script": "",
-      "script_lang": "javascript",
-      "id": "cmd_a8479117",
-      "group_name": "竞技场命令"
-    },
-    {
       "name": "黑屏后恢复1",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -264,7 +232,7 @@
     },
     {
       "name": "ARENA_RECOVER_VERIFY_AFTER_COOKIE_CLEAR",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -312,7 +280,7 @@
     {
       "id": "cmd_cf_pagecheck_arena_verify",
       "name": "自动过cf盾",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -358,12 +326,12 @@
       "group_name": "竞技场命令",
       "script": "",
       "script_lang": "javascript",
-      "last_triggered": 1773570675.6561358,
-      "trigger_count": 62
+      "last_triggered": 1773823912.412253,
+      "trigger_count": 2
     },
     {
       "name": "黑屏后恢复",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -401,7 +369,7 @@
     },
     {
       "name": "切换模型中",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -435,12 +403,12 @@
       "script": "",
       "script_lang": "javascript",
       "id": "cmd_69640733",
-      "last_triggered": 1773584695.4938655,
-      "trigger_count": 1665
+      "last_triggered": 1773824286.0963094,
+      "trigger_count": 8
     },
     {
       "name": "人机验证后恢复",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -479,7 +447,7 @@
     {
       "id": "cmd_arena_notify_qq",
       "name": "ARENA关键恢复QQ通知",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_event",
@@ -540,7 +508,7 @@
     },
     {
       "name": "网络错误后选择模型",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -685,7 +653,7 @@
     {
       "id": "cmd_gemrf001",
       "name": "自动刷新页面",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -711,7 +679,9 @@
         "informative_only": true,
         "allow_during_workflow": false,
         "interrupt_policy": "auto",
-        "interrupt_message": ""
+        "interrupt_message": "",
+        "stable_for_sec": 0,
+        "check_while_busy_workflow": true
       },
       "actions": [
         {
@@ -738,14 +708,14 @@
       "group_name": "gemini命令",
       "script": "",
       "script_lang": "javascript",
-      "last_triggered": 1773677821.3752792,
-      "trigger_count": 1,
+      "last_triggered": 1773824923.1050122,
+      "trigger_count": 6,
       "stop_on_error": false
     },
     {
       "id": "cmd_gemsw001",
       "name": "自动切换预设",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -817,7 +787,7 @@
     },
     {
       "name": "新命令1",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -852,13 +822,13 @@
       "script": "",
       "script_lang": "javascript",
       "id": "cmd_0020e346",
-      "last_triggered": 1773677931.102601,
-      "trigger_count": 2
+      "last_triggered": 1773824733.0409708,
+      "trigger_count": 1
     },
     {
       "id": "cmd_arena_terms_refresh_abort",
       "name": "ARENA_AGREE_POPUP_CLICK_FIRST",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "page_check",
@@ -915,13 +885,13 @@
       "group_name": "竞技场命令",
       "script": "",
       "script_lang": "javascript",
-      "last_triggered": 1773570842.040608,
-      "trigger_count": 66
+      "last_triggered": 1773823950.6523237,
+      "trigger_count": 2
     },
     {
       "id": "cmd_arena_terms_refresh_followup",
       "name": "ARENA_AGREE_POPUP_REFRESH_ABORT",
-      "enabled": false,
+      "enabled": true,
       "mode": "simple",
       "trigger": {
         "type": "command_result_match",
@@ -964,8 +934,8 @@
       "group_name": "竞技场命令",
       "script": "",
       "script_lang": "javascript",
-      "last_triggered": 1773570518.4972394,
-      "trigger_count": 9
+      "last_triggered": 1773823847.8804283,
+      "trigger_count": 1
     }
   ]
 }

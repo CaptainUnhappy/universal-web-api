@@ -328,6 +328,108 @@ class NetworkMonitor:
         if isinstance(raw_body, (dict, list)):
             return json.dumps(raw_body, ensure_ascii=False)
         return str(raw_body)
+
+    def _extract_content_type(self, response: Any) -> str:
+        resp = getattr(response, "response", None)
+        candidates = (
+            self._nested_get(resp, "headers", "content-type"),
+            self._nested_get(resp, "headers", "Content-Type"),
+            self._nested_get(resp, "headers", "contentType"),
+            getattr(resp, "content_type", None),
+            getattr(resp, "contentType", None),
+            self._nested_get(response, "headers", "content-type"),
+            self._nested_get(response, "headers", "Content-Type"),
+            self._nested_get(response, "headers", "contentType"),
+            getattr(response, "content_type", None),
+            getattr(response, "contentType", None),
+        )
+        for value in candidates:
+            if value:
+                return str(value).strip().lower()
+        return ""
+
+    def _is_event_stream_response(self, response: Any) -> bool:
+        content_type = self._extract_content_type(response)
+        if "text/event-stream" in content_type:
+            return True
+
+        for source_name, source_value in (
+            ("response._stream", self._nested_get(getattr(response, "response", None), "_stream")),
+            ("response.stream", self._nested_get(getattr(response, "response", None), "stream")),
+            ("event._stream", self._nested_get(response, "_stream")),
+            ("event.stream", self._nested_get(response, "stream")),
+        ):
+            if source_value not in (None, "", [], ()):
+                logger.debug(f"[NetworkMonitor] 检测到流响应结构: {source_name}")
+                return True
+        return False
+
+    def _stream_capture_complete(self, response: Any) -> bool:
+        for value in (
+            self._nested_get(getattr(response, "response", None), "_stream", "complete"),
+            self._nested_get(getattr(response, "response", None), "stream", "complete"),
+            self._nested_get(response, "_stream", "complete"),
+            self._nested_get(response, "stream", "complete"),
+        ):
+            if value is not None:
+                return bool(value)
+        return False
+
+    def _wait_for_stream_body(self, response: Any, initial_body: str, initial_source: str) -> tuple[str, str]:
+        body = initial_body
+        source = initial_source
+        if body:
+            return body, source
+
+        wait_budget = min(max(float(self._response_interval or 0.5), 0.2), 1.5)
+        deadline = time.time() + wait_budget
+
+        while time.time() < deadline:
+            if self._should_stop():
+                break
+
+            raw_body, raw_body_source = self._extract_raw_body(response)
+            body = self._normalize_raw_body(raw_body)
+            if body:
+                logger.debug(
+                    f"[NetworkMonitor] 流响应正文已就绪 "
+                    f"(source={raw_body_source}, size={len(body)} chars)"
+                )
+                return body, raw_body_source
+
+            if self._stream_capture_complete(response):
+                break
+
+            time.sleep(0.05)
+
+        return body, source
+
+    def _wait_for_stream_progress(self, response: Any, current_body: str, current_source: str) -> tuple[str, str]:
+        body = current_body or ""
+        source = current_source
+        wait_budget = min(max(float(self._response_interval or 0.5), 0.2), 1.5)
+        deadline = time.time() + wait_budget
+        previous_len = len(body)
+
+        while time.time() < deadline:
+            if self._should_stop():
+                break
+
+            raw_body, raw_body_source = self._extract_raw_body(response)
+            next_body = self._normalize_raw_body(raw_body)
+            if len(next_body) > previous_len:
+                logger.debug(
+                    f"[NetworkMonitor] 流响应继续增长 "
+                    f"(source={raw_body_source}, size={len(next_body)} chars)"
+                )
+                return next_body, raw_body_source
+
+            if self._stream_capture_complete(response):
+                return next_body, raw_body_source
+
+            time.sleep(0.05)
+
+        return body, source
         
     def pre_start(self):
         """
@@ -407,6 +509,7 @@ class NetworkMonitor:
         """
         phase_start = time.time()
         has_received_response = False
+        has_seen_stream_target = False
         last_activity_time = time.time()
         listen_restart_attempts = 0
 
@@ -422,7 +525,7 @@ class NetworkMonitor:
                 break
 
             # 设置超时时间
-            timeout = self._first_response_timeout if not has_received_response else self._response_interval
+            timeout = self._first_response_timeout if not has_seen_stream_target else self._response_interval
             
             # 等待响应
             try:
@@ -449,9 +552,9 @@ class NetworkMonitor:
             if response is None or response is False:
                 elapsed = time.time() - phase_start
                 
-                if not has_received_response:
-                    logger.warning(f"[NetworkMonitor] 首次响应超时 ({elapsed:.1f}s)，触发回退")
-                    raise NetworkMonitorTimeout(f"首次响应超时（{elapsed:.1f}s）")
+                if not has_seen_stream_target:
+                    logger.warning(f"[NetworkMonitor] 目标流响应超时 ({elapsed:.1f}s)，触发回退")
+                    raise NetworkMonitorTimeout(f"目标流响应超时（{elapsed:.1f}s）")
                 
                 silence_duration = time.time() - last_activity_time
                 if silence_duration > self._silence_threshold:
@@ -488,6 +591,16 @@ class NetworkMonitor:
                 )
                 continue
 
+            if not has_seen_stream_target:
+                has_seen_stream_target = True
+                logger.debug("[NetworkMonitor] 已捕获到首个流目标响应")
+
+            logger.debug(
+                "[NetworkMonitor] 命中流目标 "
+                f"(status={event.get('status')}, method={event.get('method')}, "
+                f"url={event.get('url', '')[:120]})"
+            )
+
             if not has_received_response:
                 has_received_response = True
                 logger.debug("[NetworkMonitor] 已捕获到首个有效响应")
@@ -501,9 +614,20 @@ class NetworkMonitor:
             # 读取响应体，流式协议优先使用 _stream.fullText
             raw_body, raw_body_source = self._extract_raw_body(response)
             raw_body = self._normalize_raw_body(raw_body)
+            is_event_stream = self._is_event_stream_response(response)
+
+            if not raw_body and is_event_stream:
+                raw_body, raw_body_source = self._wait_for_stream_body(
+                    response,
+                    raw_body,
+                    raw_body_source,
+                )
 
             if not raw_body:
-                logger.debug("[NetworkMonitor] 响应体为空，跳过")
+                logger.debug(
+                    "[NetworkMonitor] 响应体为空，跳过 "
+                    f"(stream={is_event_stream}, source={raw_body_source})"
+                )
                 continue
 
             logger.debug(
@@ -517,6 +641,26 @@ class NetworkMonitor:
             except Exception as e:
                 logger.warning(f"[NetworkMonitor] 解析异常: {e}")
                 continue
+
+            if (
+                is_event_stream
+                and not parse_result.get("content")
+                and not parse_result.get("done", False)
+                and not parse_result.get("error")
+            ):
+                next_body, next_source = self._wait_for_stream_progress(
+                    response,
+                    raw_body,
+                    raw_body_source,
+                )
+                if next_body and next_body != raw_body:
+                    raw_body = next_body
+                    raw_body_source = next_source
+                    try:
+                        parse_result = self.parser.parse_chunk(raw_body)
+                    except Exception as e:
+                        logger.warning(f"[NetworkMonitor] 二次解析异常: {e}")
+                        continue
 
             if parse_result.get("error"):
                 logger.warning(f"[NetworkMonitor] 解析失败: {parse_result['error']}")

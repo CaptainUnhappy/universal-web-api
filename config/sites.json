@@ -420,11 +420,12 @@
           "input_box": "rich-textarea .ql-editor[contenteditable=\"true\"][role=\"textbox\"]",
           "send_btn": "button.send-button",
           "result_container": ".markdown-main-panel",
-          "new_chat_btn": "button.temp-chat-button",
+          "new_chat_btn": "[data-test-id=\"expanded-button\"]",
           "message_wrapper": null,
           "generating_indicator": "",
           "点击模型选择": "[data-test-id=\"logo-pill-label-container\"]",
-          "选择模型": ".mat-mdc-menu-item:nth-of-type(1)"
+          "选择模型": ".mat-mdc-menu-item:nth-of-type(2)",
+          "临时对话按钮": "button.temp-chat-button"
         },
         "stream_config": {
           "mode": "network",
@@ -455,7 +456,7 @@
           },
           {
             "action": "CLICK",
-            "target": "new_chat_btn",
+            "target": "临时对话按钮",
             "optional": true,
             "value": null
           },

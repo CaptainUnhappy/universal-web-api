@@ -41,7 +41,7 @@ class TabSession:
     request_count: int = 0
     error_count: int = 0
     persistent_index: int = 0  # 🆕 持久化编号（重启前不变）
-    preset_name: Optional[str] = None  # 🆕 当前使用的预设名称（None = 主预设）
+    preset_name: Optional[str] = None  # 🆕 当前显式指定的预设名称（None = 跟随站点默认预设）
     
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     
@@ -1154,7 +1154,7 @@ class TabPoolManager:
         
         Args:
             persistent_index: 标签页持久化编号
-            preset_name: 预设名称（None 或空字符串表示恢复为主预设）
+            preset_name: 预设名称（None 或空字符串表示恢复为跟随站点默认预设）
         
         Returns:
             是否成功
@@ -1175,7 +1175,7 @@ class TabPoolManager:
             
             logger.debug(
                 f"[{session.id}] 预设切换: "
-                f"'{old_preset or '主预设'}' → '{preset_name or '主预设'}'"
+                f"'{old_preset or '跟随站点默认预设'}' → '{preset_name or '跟随站点默认预设'}'"
             )
             return True
     

@@ -37,6 +37,7 @@ from app.services.tool_calling import (
 logger = get_logger("API.TAB")
 
 router = APIRouter()
+FOLLOW_DEFAULT_PRESET = "__DEFAULT__"
 
 
 def _extract_stream_error_message(chunk: Any) -> str:
@@ -142,12 +143,22 @@ async def get_tab_pool_tabs(authenticated: bool = Depends(verify_auth)):
                 domain = tab_info.get("current_domain", "")
                 if domain:
                     tab_info["available_presets"] = config_engine.list_presets(domain)
+                    default_preset = config_engine.get_default_preset(domain)
+                    tab_info["default_preset"] = default_preset
+                    tab_info["effective_preset_name"] = tab_info.get("preset_name") or default_preset
+                    tab_info["is_using_default_preset"] = not bool(tab_info.get("preset_name"))
                 else:
                     tab_info["available_presets"] = []
+                    tab_info["default_preset"] = None
+                    tab_info["effective_preset_name"] = tab_info.get("preset_name")
+                    tab_info["is_using_default_preset"] = not bool(tab_info.get("preset_name"))
         except Exception as e:
             logger.debug(f"获取预设列表失败: {e}")
             for tab_info in tabs:
                 tab_info["available_presets"] = []
+                tab_info["default_preset"] = None
+                tab_info["effective_preset_name"] = tab_info.get("preset_name")
+                tab_info["is_using_default_preset"] = not bool(tab_info.get("preset_name"))
         
         return {
             "tabs": tabs,
@@ -159,6 +170,42 @@ async def get_tab_pool_tabs(authenticated: bool = Depends(verify_auth)):
 
 
 # ================= 指定标签页的聊天 API =================
+
+@router.get("/tab/{tab_index}/v1/models")
+async def list_models_with_tab(
+    tab_index: int,
+    authenticated: bool = Depends(verify_auth)
+):
+    """为指定标签页路由提供 OpenAI 兼容模型列表接口。"""
+    if tab_index < 1:
+        raise HTTPException(status_code=400, detail="标签页编号必须大于 0")
+
+    try:
+        browser = get_browser(auto_connect=False)
+        session = browser.tab_pool.acquire_by_index(
+            tab_index,
+            task_id=f"models_tab_{tab_index}_{int(time.time() * 1000)}",
+            timeout=0.1,
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"标签页 #{tab_index} 不可用或不存在")
+        browser.tab_pool.release(session.id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.debug(f"标签页模型列表校验失败（忽略）: {e}")
+
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "web-browser",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "universal-web-api"
+            }
+        ]
+    }
 
 @router.post("/tab/{tab_index}/v1/chat/completions")
 async def chat_with_tab(
@@ -592,13 +639,13 @@ async def set_tab_preset(
     try:
         browser = get_browser(auto_connect=False)
         
-        # 空字符串或 "主预设" 都视为恢复默认
-        preset_value = body.preset_name if body.preset_name != "主预设" else None
+        preset_value = None if body.preset_name == FOLLOW_DEFAULT_PRESET else body.preset_name
         
         success = browser.tab_pool.set_tab_preset(tab_index, preset_value)
         
         if success:
-            return {"success": True, "message": f"标签页 #{tab_index} 已切换到预设: {body.preset_name}"}
+            preset_label = "跟随站点默认预设" if preset_value is None else body.preset_name
+            return {"success": True, "message": f"标签页 #{tab_index} 已切换到预设: {preset_label}"}
         else:
             raise HTTPException(status_code=404, detail=f"标签页 #{tab_index} 不存在")
     
