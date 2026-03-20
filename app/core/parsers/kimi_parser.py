@@ -3,10 +3,17 @@ kimi_parser.py - Kimi Connect streaming response parser.
 
 Observed stream traits:
 - content-type: application/connect+json
-- each message is framed as 1 flag byte + 4-byte big-endian payload length
+- each message is framed as 5 bytes of binary header + one JSON object payload
 - assistant text starts with op=set, mask=block.text
 - later deltas use op=append, mask=block.text.content
 - {"done": {}} or MESSAGE_STATUS_COMPLETED ends the stream
+
+Notes:
+- In DevTools-exported `fullText` / `chunks.data`, the header bytes can be lossy once the
+  raw binary stream is coerced into a Python string, so relying on the advertised payload
+  length is brittle.
+- We therefore treat the first 5 bytes as opaque framing metadata and recover the payload
+  by scanning for a complete JSON object boundary instead.
 """
 
 from __future__ import annotations
@@ -120,23 +127,55 @@ class KimiParser(ResponseParser):
         return "".join(content_parts), done
 
     def _next_frame(self) -> Tuple[str, bool] | None:
-        if len(self._pending) < 5:
+        if len(self._pending) < 6:
             return None
 
-        length = int.from_bytes(self._pending[1:5], byteorder="big", signed=False)
-
-        if length < 0:
-            self._pending = self._pending[1:]
-            return "", False
-
-        total_length = 5 + length
-        if len(self._pending) < total_length:
+        payload_end = self._find_json_payload_end(self._pending, start=5)
+        if payload_end is None:
             return None
 
-        payload = self._pending[5:total_length]
-        self._pending = self._pending[total_length:]
+        payload = self._pending[5:payload_end]
+        self._pending = self._pending[payload_end:]
 
         return self._parse_payload(payload)
+
+    @staticmethod
+    def _find_json_payload_end(buffer: bytes, start: int) -> int | None:
+        index = start
+        limit = len(buffer)
+
+        while index < limit and chr(buffer[index]).isspace():
+            index += 1
+
+        if index >= limit or buffer[index] != ord("{"):
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+
+        for pos in range(index, limit):
+            byte = buffer[pos]
+
+            if in_string:
+                if escape:
+                    escape = False
+                elif byte == ord("\\"):
+                    escape = True
+                elif byte == ord('"'):
+                    in_string = False
+                continue
+
+            if byte == ord('"'):
+                in_string = True
+            elif byte == ord("{"):
+                depth += 1
+            elif byte == ord("}"):
+                depth -= 1
+                if depth == 0:
+                    return pos + 1
+
+        return None
 
     def _parse_payload(self, payload: bytes) -> Tuple[str, bool]:
         payload_text = payload.decode("utf-8", errors="ignore").strip()

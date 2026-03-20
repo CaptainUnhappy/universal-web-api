@@ -790,17 +790,11 @@ class TextInputHandler:
         except Exception:
             return 0
 
-    def _wait_for_upload_signal(self, filepath: str, timeout: float = 2.5) -> bool:
-        """
-        Wait for page-level evidence that a file was actually attached.
-
-        Without this check, silent upload failures can be misclassified as success
-        and only the hint text gets submitted to the model.
-        """
+    def _probe_upload_signal(self, filepath: str) -> dict:
+        """Read page-level evidence for whether a file attachment appeared."""
         filename = os.path.basename(filepath or "").strip()
         stem = os.path.splitext(filename)[0].strip()
         needles = [item.lower() for item in (filename, stem) if item]
-        deadline = time.time() + max(0.2, timeout)
         expected_names_js = json.dumps(needles, ensure_ascii=False)
 
         js = """
@@ -841,28 +835,64 @@ class TextInputHandler:
         })();
         """.replace("__EXPECTED_NAMES__", expected_names_js)
 
+        try:
+            result = self.tab.run_js(js) or {}
+        except Exception as e:
+            logger.debug(f"[FILE_PASTE] 检查文件上传信号失败: {e}")
+            result = {}
+
+        return {
+            "fileCount": int(result.get("fileCount", 0) or 0),
+            "matchedName": bool(result.get("matchedName")),
+            "matchedFileNode": bool(result.get("matchedFileNode")),
+            "filename": filename or filepath,
+        }
+
+    def _has_upload_signal(self, state: dict, baseline: dict = None) -> bool:
+        """Check whether the current page state shows a new attachment signal."""
+        baseline = baseline or {}
+        file_count = int(state.get("fileCount", 0) or 0)
+        baseline_file_count = int(baseline.get("fileCount", 0) or 0)
+        matched_name = bool(state.get("matchedName"))
+        matched_file_node = bool(state.get("matchedFileNode"))
+
+        if not baseline:
+            return file_count > 0 or matched_name or matched_file_node
+
+        return (
+            file_count > baseline_file_count
+            or (matched_file_node and not bool(baseline.get("matchedFileNode")))
+            or (matched_name and not bool(baseline.get("matchedName")))
+        )
+
+    def _wait_for_upload_signal(self, filepath: str, timeout: float = 2.5, baseline: dict = None) -> bool:
+        """
+        Wait for page-level evidence that a file was actually attached.
+
+        Without this check, silent upload failures can be misclassified as success
+        and only the hint text gets submitted to the model.
+        """
+        deadline = time.time() + max(0.2, timeout)
+        last_state = baseline or self._probe_upload_signal(filepath)
+
         while time.time() < deadline:
             if self._check_cancelled():
                 return False
 
-            try:
-                result = self.tab.run_js(js) or {}
-            except Exception as e:
-                logger.debug(f"[FILE_PASTE] 检查文件上传信号失败: {e}")
-                result = {}
-
-            file_count = int(result.get("fileCount", 0) or 0)
-            if file_count > 0 or bool(result.get("matchedName")) or bool(result.get("matchedFileNode")):
+            state = self._probe_upload_signal(filepath)
+            last_state = state
+            if self._has_upload_signal(state, baseline):
                 logger.debug(
                     f"[FILE_PASTE] 检测到文件上传信号 "
-                    f"(file_count={file_count}, matched_name={bool(result.get('matchedName'))}, "
-                    f"matched_file_node={bool(result.get('matchedFileNode'))})"
+                    f"(file_count={state.get('fileCount', 0)}, "
+                    f"matched_name={bool(state.get('matchedName'))}, "
+                    f"matched_file_node={bool(state.get('matchedFileNode'))})"
                 )
                 return True
 
             time.sleep(0.2)
 
-        logger.warning(f"[FILE_PASTE] 未检测到文件上传信号: {filename or filepath}")
+        logger.warning(f"[FILE_PASTE] 未检测到文件上传信号: {last_state.get('filename', filepath)}")
         return False
 
     def _click_upload_button_if_configured(self) -> bool:
@@ -908,6 +938,7 @@ class TextInputHandler:
                 if file_input.attr("disabled") is not None:
                     continue
 
+                baseline = self._probe_upload_signal(filepath)
                 file_input.input(filepath)
                 try:
                     file_input.run_js(
@@ -921,6 +952,13 @@ class TextInputHandler:
 
                 selected_count = self._get_element_file_count(file_input)
                 if selected_count <= 0:
+                    if self._wait_for_upload_signal(filepath, timeout=1.2, baseline=baseline):
+                        logger.debug(
+                            f"[FILE_PASTE] file input #{index} 已触发页面附件信号，"
+                            f"视为上传成功 (selector={selector or 'input[type=file]'})"
+                        )
+                        return True
+
                     logger.debug(
                         f"[FILE_PASTE] file input #{index} 未真正挂载文件 "
                         f"(selector={selector or 'input[type=file]'})"
@@ -1149,9 +1187,6 @@ class TextInputHandler:
             if configured_drop_zone and self._upload_file_via_drop_zone(filepath, configured_drop_zone):
                 return True
 
-        if self._upload_file_via_input(filepath):
-            return True
-
         return False
     
     def _should_use_file_paste(self, text: str) -> bool:
@@ -1215,6 +1250,7 @@ class TextInputHandler:
                 return False
 
             logger.debug(f"[FILE_PASTE] 临时文件: {filepath}")
+            upload_baseline = self._probe_upload_signal(filepath)
 
             # 4. 优先尝试站点专配上传入口，再回退到通用 file input
             uploaded = self._upload_file_via_site_targets(filepath)
@@ -1240,7 +1276,7 @@ class TextInputHandler:
             if self._check_cancelled():
                 return True
 
-            if not self._wait_for_upload_signal(filepath):
+            if not self._wait_for_upload_signal(filepath, baseline=upload_baseline):
                 logger.warning("[FILE_PASTE] 文件上传未生效，放弃文件粘贴模式")
                 return False
             self._recent_file_upload_at = time.time()

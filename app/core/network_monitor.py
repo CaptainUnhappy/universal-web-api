@@ -291,10 +291,31 @@ class NetworkMonitor:
 
         direct_body = getattr(resp, "body", None)
         if direct_body not in (None, "", b"", bytearray()):
-            if isinstance(direct_body, dict):
-                stream_full_text = self._nested_get(direct_body, "_stream", "fullText")
-                if stream_full_text not in (None, ""):
-                    return stream_full_text, "body._stream.fullText"
+            direct_body_container = self._coerce_json_container(direct_body)
+            if isinstance(direct_body_container, dict):
+                for source_name, source_value in (
+                    ("body._stream.fullText", self._nested_get(direct_body_container, "_stream", "fullText")),
+                    ("body.stream.fullText", self._nested_get(direct_body_container, "stream", "fullText")),
+                    ("body._stream.chunks", self._nested_get(direct_body_container, "_stream", "chunks")),
+                    ("body.stream.chunks", self._nested_get(direct_body_container, "stream", "chunks")),
+                ):
+                    if source_value in (None, "", [], ()):
+                        continue
+                    if source_name.endswith(".chunks"):
+                        merged = self._merge_stream_chunks(source_value)
+                        if merged:
+                            return merged, source_name
+                        continue
+                    return source_value, source_name
+                logger.debug(
+                    "[NetworkMonitor][DirectBody] no stream field found in body container: "
+                    f"{self._describe_json_container(direct_body)}"
+                )
+            else:
+                logger.debug(
+                    "[NetworkMonitor][DirectBody] body is not a JSON container: "
+                    f"{self._describe_json_container(direct_body)}"
+                )
             return direct_body, "body"
 
         return None, "empty"
@@ -329,6 +350,63 @@ class NetworkMonitor:
             return json.dumps(raw_body, ensure_ascii=False)
         return str(raw_body)
 
+    @staticmethod
+    def _coerce_json_container(value: Any) -> Any:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    parsed = json.loads(stripped)
+                except Exception:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @staticmethod
+    def _describe_json_container(value: Any) -> str:
+        container = NetworkMonitor._coerce_json_container(value)
+        if not isinstance(container, dict):
+            return f"type={type(value).__name__}, preview={_debug_preview(value, 320)}"
+
+        def _keys_of(obj: Any) -> list[str]:
+            if isinstance(obj, dict):
+                return [str(k) for k in list(obj.keys())[:8]]
+            return []
+
+        message = container.get("message")
+        body = container.get("body")
+        message_content = message.get("content") if isinstance(message, dict) else None
+        message_content_len = len(message_content) if isinstance(message_content, str) else 0
+
+        return (
+            f"keys={_keys_of(container)}, "
+            f"stream_keys={_keys_of(container.get('stream'))}, "
+            f"_stream_keys={_keys_of(container.get('_stream'))}, "
+            f"body_keys={_keys_of(body)}, "
+            f"message_keys={_keys_of(message)}, "
+            f"message_content_len={message_content_len}, "
+            f"preview={_debug_preview(container, 320)}"
+        )
+
+    @staticmethod
+    def _looks_like_sse_payload(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+
+        stripped = value.lstrip("\ufeff\r\n\t ")
+        if not stripped:
+            return False
+
+        return (
+            stripped.startswith("id:")
+            or stripped.startswith("event:")
+            or stripped.startswith("data:")
+            or "\nevent:" in stripped
+            or "\ndata:" in stripped
+        )
+
     def _extract_content_type(self, response: Any) -> str:
         resp = getattr(response, "response", None)
         candidates = (
@@ -353,11 +431,17 @@ class NetworkMonitor:
         if "text/event-stream" in content_type:
             return True
 
+        direct_body = self._coerce_json_container(
+            self._nested_get(getattr(response, "response", None), "body")
+        )
+
         for source_name, source_value in (
             ("response._stream", self._nested_get(getattr(response, "response", None), "_stream")),
             ("response.stream", self._nested_get(getattr(response, "response", None), "stream")),
             ("event._stream", self._nested_get(response, "_stream")),
             ("event.stream", self._nested_get(response, "stream")),
+            ("body._stream", self._nested_get(direct_body, "_stream") if isinstance(direct_body, dict) else None),
+            ("body.stream", self._nested_get(direct_body, "stream") if isinstance(direct_body, dict) else None),
         ):
             if source_value not in (None, "", [], ()):
                 logger.debug(f"[NetworkMonitor] 检测到流响应结构: {source_name}")
@@ -365,11 +449,16 @@ class NetworkMonitor:
         return False
 
     def _stream_capture_complete(self, response: Any) -> bool:
+        direct_body = self._coerce_json_container(
+            self._nested_get(getattr(response, "response", None), "body")
+        )
         for value in (
             self._nested_get(getattr(response, "response", None), "_stream", "complete"),
             self._nested_get(getattr(response, "response", None), "stream", "complete"),
             self._nested_get(response, "_stream", "complete"),
             self._nested_get(response, "stream", "complete"),
+            self._nested_get(direct_body, "_stream", "complete") if isinstance(direct_body, dict) else None,
+            self._nested_get(direct_body, "stream", "complete") if isinstance(direct_body, dict) else None,
         ):
             if value is not None:
                 return bool(value)
@@ -614,6 +703,21 @@ class NetworkMonitor:
             # 读取响应体，流式协议优先使用 _stream.fullText
             raw_body, raw_body_source = self._extract_raw_body(response)
             raw_body = self._normalize_raw_body(raw_body)
+            if self.parser.get_id() == "doubao" and raw_body_source == "body":
+                if self._looks_like_sse_payload(raw_body):
+                    logger.debug(
+                        "[NetworkMonitor][DoubaoDebug] body source contains raw SSE payload, "
+                        "continue parsing in network mode"
+                    )
+                else:
+                    logger.debug(
+                        "[NetworkMonitor][DoubaoDebug] body-only response summary: "
+                        f"{self._describe_json_container(raw_body)}"
+                    )
+                    logger.warning(
+                        "[NetworkMonitor] 豆包网络响应仅返回 body 包装结果，回退到 DOM 监听"
+                    )
+                    raise NetworkMonitorError("doubao_body_only_response")
             is_event_stream = self._is_event_stream_response(response)
 
             if not raw_body and is_event_stream:

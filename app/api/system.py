@@ -16,6 +16,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 
+from app import __version__ as APP_VERSION
 from fastapi import APIRouter, Request, HTTPException, Header, Depends
 from fastapi.responses import JSONResponse
 
@@ -74,7 +75,7 @@ async def health_check():
 
     response = {
         "service": "healthy",
-        "version": "2.0.0",
+        "version": APP_VERSION,
         "browser": browser_health,
         "request_manager": rm_status,
         "config": {
@@ -156,6 +157,15 @@ async def save_env_config(
         data = await request.json()
         new_config = data.get("config", {})
 
+        def serialize_env_value(value) -> str:
+            if isinstance(value, bool):
+                return 'true' if value else 'false'
+            if isinstance(value, (int, float)):
+                return str(value)
+            if value is None:
+                return ''
+            return str(value)
+
         env_path = Path(".env")
         lines = []
 
@@ -164,6 +174,7 @@ async def save_env_config(
                 lines = f.readlines()
 
         new_lines = []
+        existing_keys = set()
 
         for line in lines:
             stripped = line.strip()
@@ -174,20 +185,35 @@ async def save_env_config(
 
             if '=' in stripped:
                 key = stripped.split('=', 1)[0].strip()
+                existing_keys.add(key)
 
                 if key in new_config:
-                    value = new_config[key]
-
-                    if isinstance(value, bool):
-                        value = 'true' if value else 'false'
-                    elif isinstance(value, (int, float)):
-                        value = str(value)
-
+                    value = serialize_env_value(new_config[key])
                     new_lines.append(f"{key}={value}\n")
                 else:
                     new_lines.append(line)
             else:
                 new_lines.append(line)
+
+        missing_items = []
+        for key, value in new_config.items():
+            if key in existing_keys:
+                continue
+
+            serialized = serialize_env_value(value)
+            if serialized == '':
+                continue
+
+            missing_items.append((key, serialized))
+
+        if missing_items:
+            if new_lines and not new_lines[-1].endswith('\n'):
+                new_lines[-1] = new_lines[-1] + '\n'
+            if new_lines and new_lines[-1].strip():
+                new_lines.append('\n')
+
+            for key, value in missing_items:
+                new_lines.append(f"{key}={value}\n")
 
         with open(env_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)

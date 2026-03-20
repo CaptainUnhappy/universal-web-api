@@ -1,3 +1,26 @@
+## [2.6.4] - 2026-03-20
+
+### 🔧 设置页与环境配置
+
+- 控制面板补齐 `PUBLIC_BASE_URL`、`BROWSER_PATH`、`BROWSER_PROFILE_DIR`、`BROWSER_PROFILE_NAME`、`AUTO_UPDATE_ENABLED`、`GITHUB_REPO`、`HELPER_API_PROVIDER` 等 `.env` 字段
+- 保存 `.env` 时会把原文件里不存在但在面板中设置过的新键追加写入，避免出现“面板能改但文件没写进去”
+- 设置页会明确区分“保存后服务重启生效”和“需重启 `start.bat`”的配置，避免浏览器启动类参数被误判为已经即时生效
+
+### 🧭 Dashboard 与启动配置
+
+- `DASHBOARD_ENABLED` / `DASHBOARD_FILE` 已正式接入根路由与 `/dashboard`，可按配置关闭控制面板或切换面板文件
+- 修复 `start.bat` 读取 `.env` 时对 `KEY = value`、UTF-8 BOM、首尾空格与引号值的兼容性
+- 修复自定义浏览器路径和用户目录相关配置在启动阶段的读取稳定性，避免 `BROWSER_PROFILE_DIR` / `BROWSER_PROFILE_NAME` 回落默认值
+
+### 📎 文件粘贴
+
+- 修复部分站点在 `file input` 上传后立即清空 `input.files` 时被误判为失败，导致同一个临时文件被重复通过 `file input` 和剪贴板追加
+- 文件粘贴现在会基于上传前后的页面信号判断是否已新增附件，并避免在未点击 `upload_btn` 的场景下重复执行第二轮通用 `file input` 重试
+
+### 🔖 版本
+
+- 项目版本更新至 `2.6.4`
+
 ## [2.6.3] - 2026-03-17
 
 ### ✨ 命令分组与批量操作

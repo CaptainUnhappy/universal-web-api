@@ -343,8 +343,8 @@
         },
         "workflow": [
           {
-            "action": "CLICK",
-            "target": "new_chat_btn",
+            "action": "KEY_PRESS",
+            "target": "Ctrl+Shift+O",
             "optional": true,
             "value": null
           },

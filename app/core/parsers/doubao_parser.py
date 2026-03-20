@@ -66,6 +66,8 @@ class DoubaoParser(ResponseParser):
             delta_content, done = self._consume_new_data(new_data)
             if delta_content:
                 repaired = self._repair_text(delta_content)
+                if repaired != delta_content and self._assembled_text.endswith(delta_content):
+                    self._assembled_text = self._assembled_text[:-len(delta_content)] + repaired
                 result["content"] = repaired
             result["done"] = done
 
@@ -118,7 +120,54 @@ class DoubaoParser(ResponseParser):
         except json.JSONDecodeError:
             return "", False
 
+        logger.debug(f"[DoubaoParser][DirectJSON] {self._describe_direct_json(data)}")
+
+        embedded_stream = self._extract_embedded_stream_payload(data)
+        if embedded_stream:
+            logger.debug(
+                "[DoubaoParser][DirectJSON] branch=embedded_stream "
+                f"payload_len={len(embedded_stream)}"
+            )
+            return self._consume_new_data(embedded_stream)
+
+        logger.debug("[DoubaoParser][DirectJSON] branch=direct_content")
         return self._extract_direct_json_content(data)
+
+    @staticmethod
+    def _extract_embedded_stream_payload(data: Any) -> str:
+        if not isinstance(data, dict):
+            return ""
+
+        containers: List[Dict[str, Any]] = [data]
+        body = data.get("body")
+        if isinstance(body, dict):
+            containers.append(body)
+
+        for container in containers:
+            for stream_key in ("_stream", "stream"):
+                stream_data = container.get(stream_key)
+                if not isinstance(stream_data, dict):
+                    continue
+
+                full_text = stream_data.get("fullText")
+                if isinstance(full_text, str) and full_text:
+                    return full_text
+
+                chunks = stream_data.get("chunks")
+                if not isinstance(chunks, list):
+                    continue
+
+                parts: List[str] = []
+                for chunk in chunks:
+                    if not isinstance(chunk, dict):
+                        continue
+                    chunk_data = chunk.get("data")
+                    if isinstance(chunk_data, str) and chunk_data:
+                        parts.append(chunk_data)
+                if parts:
+                    return "".join(parts)
+
+        return ""
 
     def _parse_event_block(self, block: str) -> Tuple[str, bool]:
         event_name = ""
@@ -141,22 +190,57 @@ class DoubaoParser(ResponseParser):
             return "", False
 
         if event_name in {"STREAM_FINISH", "STREAM_END", "DONE", "COMPLETION"}:
+            logger.debug(f"[DoubaoParser][SSE] event={event_name} done_only=1")
             return "", True
 
         if event_name == "CHUNK_DELTA":
-            return self._extract_chunk_delta(payload), False
+            text = self._extract_chunk_delta(payload)
+            text = self._repair_text(text)
+            if text:
+                logger.debug(
+                    f"[DoubaoParser][SSE] event=CHUNK_DELTA text_len={len(text)} "
+                    f"preview={text[:60]!r}"
+                )
+            return text, False
 
         if event_name == "STREAM_MSG_NOTIFY":
-            return self._extract_stream_msg_notify(payload), False
+            text = self._extract_stream_msg_notify(payload)
+            text = self._repair_text(text)
+            if text:
+                logger.debug(
+                    f"[DoubaoParser][SSE] event=STREAM_MSG_NOTIFY text_len={len(text)} "
+                    f"preview={text[:60]!r}"
+                )
+            return text, False
 
         if event_name == "STREAM_CHUNK":
-            return self._extract_stream_chunk(payload)
+            text, done = self._extract_stream_chunk(payload)
+            text = self._repair_text(text)
+            if text or done:
+                logger.debug(
+                    f"[DoubaoParser][SSE] event=STREAM_CHUNK text_len={len(text)} "
+                    f"done={done} preview={text[:60]!r}"
+                )
+            return text, done
 
         if event_name == "FULL_MSG_NOTIFY":
-            return self._extract_full_msg_notify(payload), False
+            text = self._extract_full_msg_notify(payload)
+            text = self._repair_text(text)
+            if text:
+                logger.debug(
+                    f"[DoubaoParser][SSE] event=FULL_MSG_NOTIFY text_len={len(text)} "
+                    f"preview={text[:60]!r}"
+                )
+            return text, False
 
         if event_name == "SSE_REPLY_END":
-            return self._extract_reply_end(payload)
+            text, done = self._extract_reply_end(payload)
+            text = self._repair_text(text)
+            logger.debug(
+                f"[DoubaoParser][SSE] event=SSE_REPLY_END text_len={len(text)} "
+                f"done={done} preview={text[:60]!r}"
+            )
+            return text, done
 
         return "", False
 
@@ -167,6 +251,10 @@ class DoubaoParser(ResponseParser):
         role = data.get("role")
         content = data.get("content")
         if role == "assistant" and isinstance(content, str) and content:
+            logger.debug(
+                "[DoubaoParser][DirectJSON] content_source=role.content "
+                f"len={len(content)}"
+            )
             return self._extract_full_message_delta(content), True
 
         message = data.get("message")
@@ -174,6 +262,10 @@ class DoubaoParser(ResponseParser):
             role = message.get("role")
             content = message.get("content")
             if role == "assistant" and isinstance(content, str) and content:
+                logger.debug(
+                    "[DoubaoParser][DirectJSON] content_source=message.content "
+                    f"len={len(content)}"
+                )
                 return self._extract_full_message_delta(content), True
 
         choices = data.get("choices")
@@ -193,9 +285,40 @@ class DoubaoParser(ResponseParser):
                     if isinstance(text, str) and text:
                         parts.append(text)
             if parts:
+                logger.debug(
+                    "[DoubaoParser][DirectJSON] content_source=choices "
+                    f"parts={len(parts)} total_len={len(''.join(parts))}"
+                )
                 return self._extract_full_message_delta("".join(parts)), bool(data.get("done", True))
 
         return "", False
+
+    @staticmethod
+    def _describe_direct_json(data: Any) -> str:
+        if not isinstance(data, dict):
+            return f"type={type(data).__name__}"
+
+        def _keys_of(obj: Any) -> list[str]:
+            if isinstance(obj, dict):
+                return [str(k) for k in list(obj.keys())[:8]]
+            return []
+
+        message = data.get("message")
+        body = data.get("body")
+        message_content = message.get("content") if isinstance(message, dict) else None
+        message_content_len = len(message_content) if isinstance(message_content, str) else 0
+        choices = data.get("choices")
+        choices_len = len(choices) if isinstance(choices, list) else 0
+
+        return (
+            f"keys={_keys_of(data)}, "
+            f"stream_keys={_keys_of(data.get('stream'))}, "
+            f"_stream_keys={_keys_of(data.get('_stream'))}, "
+            f"body_keys={_keys_of(body)}, "
+            f"message_keys={_keys_of(message)}, "
+            f"message_content_len={message_content_len}, "
+            f"choices_len={choices_len}"
+        )
 
     @staticmethod
     def _extract_chunk_delta(payload: str) -> str:
@@ -355,26 +478,73 @@ class DoubaoParser(ResponseParser):
         if not text:
             return text
 
-        suspicious_tokens = ("Ã", "Â", "ð", "ä½", "å¥", "å‘", "ï¼", "ðŸ")
-        if not any(token in text for token in suspicious_tokens):
+        if not DoubaoParser._should_try_repair_text(text):
             return text
 
         for source_encoding in ("latin1", "cp1252"):
-            try:
-                repaired = (
-                    text
-                    .encode(source_encoding, errors="ignore")
-                    .decode("utf-8", errors="ignore")
-                )
-            except Exception:
+            repaired = DoubaoParser._try_redecode_text(text, source_encoding)
+            if not repaired:
                 continue
 
             if DoubaoParser._looks_more_readable(repaired, text):
+                logger.debug(
+                    "[DoubaoParser][Repair] repaired mojibake "
+                    f"(enc={source_encoding}, before_len={len(text)}, after_len={len(repaired)})"
+                )
                 return repaired
         return text
 
     @staticmethod
+    def _should_try_repair_text(text: str) -> bool:
+        if not text:
+            return False
+
+        if any(0x4E00 <= ord(ch) <= 0x9FFF or ord(ch) > 0xFFFF for ch in text):
+            return False
+
+        cp1252_extra = {
+            0x0152, 0x0153, 0x0160, 0x0161, 0x0178, 0x017D, 0x017E,
+            0x02C6, 0x02DC, 0x2013, 0x2014, 0x2018, 0x2019, 0x201A,
+            0x201C, 0x201D, 0x201E, 0x2020, 0x2021, 0x2022, 0x2026,
+            0x2030, 0x2039, 0x203A, 0x20AC, 0x2122,
+        }
+        suspicious_count = 0
+        for ch in text:
+            code = ord(ch)
+            if 0x80 <= code <= 0x00FF or code in cp1252_extra:
+                suspicious_count += 1
+
+        return suspicious_count >= max(2, len(text) // 4)
+
+    @staticmethod
+    def _try_redecode_text(text: str, source_encoding: str) -> str:
+        data = bytearray()
+
+        for ch in text:
+            code = ord(ch)
+            if code <= 0xFF:
+                data.append(code)
+                continue
+
+            try:
+                encoded = ch.encode(source_encoding)
+            except Exception:
+                return ""
+
+            if len(encoded) != 1:
+                return ""
+
+            data.extend(encoded)
+
+        try:
+            return bytes(data).decode("utf-8")
+        except UnicodeDecodeError:
+            return bytes(data).decode("utf-8", errors="ignore")
+
+    @staticmethod
     def _looks_more_readable(candidate: str, original: str) -> bool:
+        readable_punct = set(".,!?;:'\"()[]{}-_/~`@#$%^&*+=<>，。！？：；（）【】《》、～“”‘’…")
+
         def score(value: str) -> int:
             total = 0
             for ch in value:
@@ -383,11 +553,13 @@ class DoubaoParser(ResponseParser):
                     total += 2
                 elif code > 0xFFFF:
                     total += 2
-                elif ch.isascii() and (ch.isalnum() or ch.isspace() or ch in ".,!?;:'\"()[]{}-_/~`@#$%^&*+=<>，。！？：；（）【】《》、～"):
+                elif ch.isascii() and (ch.isalnum() or ch.isspace() or ch in readable_punct):
+                    total += 1
+                elif ch in readable_punct or ch.isspace():
                     total += 1
             return total
 
-        return score(candidate) >= score(original) + 4
+        return score(candidate) > score(original)
 
     @classmethod
     def get_id(cls) -> str:

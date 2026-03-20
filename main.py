@@ -15,6 +15,7 @@ from urllib.request import urlopen
 print(f"[DEBUG] Python: {sys.executable}")
 from pathlib import Path
 from contextlib import asynccontextmanager
+from app import __version__ as APP_VERSION
 from app.core import get_browser
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -119,6 +120,42 @@ def _open_dashboard_non_blocking(dashboard_url: str, initial_delay_sec: float = 
         name="open-tutorial-non-blocking",
     ).start()
 
+
+def _resolve_dashboard_path():
+    configured = (AppConfig.get_dashboard_file() or "").strip()
+    candidates = []
+
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            candidates.append(configured_path)
+        else:
+            candidates.append(configured_path)
+            candidates.append(Path("static") / configured_path)
+
+    candidates.append(Path("static/index.html"))
+
+    seen = set()
+    for candidate in candidates:
+        normalized = str(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    return None
+
+
+def _dashboard_info_response():
+    return JSONResponse({
+        "service": "Universal Web-to-API",
+        "version": APP_VERSION,
+        "dashboard": "disabled",
+        "docs": "/docs"
+    })
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -164,13 +201,15 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.debug(f"检查标签页状态失败: {e}")
             
-            if should_open_dashboard:
+            if should_open_dashboard and AppConfig.is_dashboard_enabled():
                 try:
-                    dashboard_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}/static/tutorial.html"
-                    logger.info(f"[startup] 首次启动，使用系统浏览器打开教程页: {dashboard_url}")
+                    dashboard_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}/"
+                    logger.info(f"[startup] 首次启动，使用系统浏览器打开控制面板: {dashboard_url}")
                     _open_dashboard_non_blocking(dashboard_url, initial_delay_sec=1.2)
                 except Exception as e:
                     logger.warning(f"⚠️ 无法打开控制面板: {e}")
+            elif should_open_dashboard:
+                logger.info("[startup] Dashboard 已禁用，跳过自动打开")
             else:
                 # 显示已连接状态
                 pool_info = health.get("tab_pool", {})
@@ -195,7 +234,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("")
     logger.info("🚀 服务已就绪！")
-    logger.info(f"   Dashboard: http://{AppConfig.get_host()}:{AppConfig.get_port()}/")
+    if AppConfig.is_dashboard_enabled():
+        logger.info(f"   Dashboard: http://{AppConfig.get_host()}:{AppConfig.get_port()}/")
+    else:
+        logger.info("   Dashboard: disabled")
     logger.info(f"   健康检查: http://{AppConfig.get_host()}:{AppConfig.get_port()}/health")
     logger.info("")
 
@@ -216,7 +258,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Universal Web-to-API",
     description="将任意 AI Web 界面转换为 OpenAI 兼容 API",
-    version="2.5.8",
+    version=APP_VERSION,
     docs_url="/docs" if AppConfig.DEBUG else None,
     redoc_url="/redoc" if AppConfig.DEBUG else None,
     lifespan=lifespan
@@ -249,13 +291,17 @@ async def disable_dashboard_cache(request, call_next):
 @app.get("/", include_in_schema=False)
 async def root():
     """首页 - Dashboard"""
-    if Path("static/index.html").exists():
-        return FileResponse("static/index.html")
+    if not AppConfig.is_dashboard_enabled():
+        return _dashboard_info_response()
+
+    dashboard_path = _resolve_dashboard_path()
+    if dashboard_path:
+        return FileResponse(dashboard_path)
     # 如果没有 Dashboard，返回 API 信息
     return JSONResponse({
         "service": "Universal Web-to-API",
-        "version": "2.5.8",
-        "dashboard": "请确保 static/index.html 存在",
+        "version": APP_VERSION,
+        "dashboard": "请确保 DASHBOARD_FILE 指向的文件存在",
         "docs": "/docs"
     })
 
@@ -263,11 +309,18 @@ async def root():
 @app.get("/dashboard", include_in_schema=False)
 async def dashboard():
     """Dashboard 页面"""
-    if Path("static/index.html").exists():
-        return FileResponse("static/index.html")
+    if not AppConfig.is_dashboard_enabled():
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": "Dashboard 已禁用"}}
+        )
+
+    dashboard_path = _resolve_dashboard_path()
+    if dashboard_path:
+        return FileResponse(dashboard_path)
     return JSONResponse(
         status_code=404,
-        content={"error": {"message": "Dashboard 未找到，请确保 static/index.html 存在"}}
+        content={"error": {"message": "Dashboard 未找到，请确保 DASHBOARD_FILE 指向的文件存在"}}
     )
 
 

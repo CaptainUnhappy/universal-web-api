@@ -48,6 +48,23 @@ window.SettingsTab = {
             return groups
         }
     },
+    methods: {
+        getEnvApplyScope(field, group) {
+            return field.apply || group.apply || 'service'
+        },
+        getEnvApplyLabel(field, group) {
+            const scope = this.getEnvApplyScope(field, group)
+            if (scope === 'launcher') return '需重启 start.bat'
+            return '保存后服务重启生效'
+        },
+        getEnvApplyClass(field, group) {
+            const scope = this.getEnvApplyScope(field, group)
+            if (scope === 'launcher') {
+                return 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800'
+            }
+            return 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800'
+        }
+    },
     template: `
         <div class="h-full overflow-auto p-4 md:p-6 bg-gray-50 dark:bg-gray-900">
             <div class="max-w-7xl mx-auto space-y-6">
@@ -195,7 +212,7 @@ window.SettingsTab = {
                                 <h3 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
                                     <span class="text-xl" v-html="$icons.folderOpen"></span> 环境配置
                                 </h3>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">需重启服务生效</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">每个字段都会标明是服务重启生效，还是需要重新运行 start.bat</p>
                             </div>
                             <div class="flex gap-2">
                                 <button @click="$emit('reset-env')" title="重置"
@@ -227,10 +244,15 @@ window.SettingsTab = {
 
                                 <div v-show="!envCollapsed[groupKey]" class="px-4 py-4 space-y-5 bg-white dark:bg-gray-800">
                                     <div v-for="(field, fieldKey) in group.items" :key="fieldKey" class="grid grid-cols-1 gap-1">
-                                        <div class="flex justify-between">
-                                            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                {{ field.label }}
-                                            </label>
+                                        <div class="flex justify-between items-start gap-3">
+                                            <div class="min-w-0 space-y-1">
+                                                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                    {{ field.label }}
+                                                </label>
+                                                <span :class="['inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', getEnvApplyClass(field, group)]">
+                                                    {{ getEnvApplyLabel(field, group) }}
+                                                </span>
+                                            </div>
                                             <span v-if="field.unit" class="text-xs text-gray-400 dark:text-gray-500 font-mono">
                                                 {{ field.unit }}
                                             </span>

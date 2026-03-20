@@ -9,4 +9,14 @@ app - 应用主包
 - utils: 工具函数
 """
 
-__version__ = "2.0.0"
+from pathlib import Path
+
+
+def _load_version() -> str:
+    try:
+        return (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _load_version()

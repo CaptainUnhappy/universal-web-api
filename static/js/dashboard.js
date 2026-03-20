@@ -342,6 +342,7 @@ const BROWSER_CONSTANTS_SCHEMA = {
 // 环境变量 Schema
 const ENV_CONFIG_SCHEMA = {
     service: {
+        apply: 'service',
         label: '服务配置',
         icon: '🖥️',
         items: {
@@ -358,6 +359,12 @@ const ENV_CONFIG_SCHEMA = {
                 max: 65535,
                 default: 8199
             },
+            PUBLIC_BASE_URL: {
+                label: '公开访问地址',
+                desc: '用于生成返回给客户端的可访问链接，例如图片下载地址',
+                type: 'text',
+                default: 'http://127.0.0.1:8199'
+            },
             APP_DEBUG: {
                 label: '调试模式',
                 desc: '开启 API 文档和详细错误',
@@ -373,6 +380,7 @@ const ENV_CONFIG_SCHEMA = {
         }
     },
     auth: {
+        apply: 'service',
         label: '认证配置',
         icon: '🔐',
         items: {
@@ -390,6 +398,7 @@ const ENV_CONFIG_SCHEMA = {
         }
     },
     cors: {
+        apply: 'service',
         label: 'CORS 配置',
         icon: '🌐',
         items: {
@@ -407,6 +416,7 @@ const ENV_CONFIG_SCHEMA = {
         }
     },
     browser: {
+        apply: 'launcher',
         label: '浏览器配置',
         icon: '🌍',
         items: {
@@ -416,10 +426,29 @@ const ENV_CONFIG_SCHEMA = {
                 min: 1024,
                 max: 65535,
                 default: 9222
+            },
+            BROWSER_PATH: {
+                label: '自定义浏览器路径',
+                desc: '可选，留空时自动检测 Chrome、Edge、Brave 等浏览器',
+                type: 'text',
+                default: ''
+            },
+            BROWSER_PROFILE_DIR: {
+                label: '浏览器配置目录',
+                desc: '留空时使用项目内的 chrome_profile 目录',
+                type: 'text',
+                default: ''
+            },
+            BROWSER_PROFILE_NAME: {
+                label: '浏览器配置名称',
+                desc: '例如 Default、Profile 1',
+                type: 'text',
+                default: ''
             }
         }
     },
     proxy: {
+        apply: 'launcher',
         label: '代理配置',
         icon: '🔀',
         items: {
@@ -444,6 +473,7 @@ const ENV_CONFIG_SCHEMA = {
         }
     },
     dashboard: {
+        apply: 'service',
         label: 'Dashboard 配置',
         icon: '📊',
         items: {
@@ -459,7 +489,27 @@ const ENV_CONFIG_SCHEMA = {
             }
         }
     },
+    update: {
+        apply: 'launcher',
+        label: '更新配置',
+        icon: '🔄',
+        items: {
+            AUTO_UPDATE_ENABLED: {
+                label: '启用自动更新',
+                desc: '启动脚本会在启动前检查并应用更新',
+                type: 'switch',
+                default: true
+            },
+            GITHUB_REPO: {
+                label: 'GitHub 仓库',
+                desc: '自动更新检查使用的仓库，格式为 owner/repo',
+                type: 'text',
+                default: 'lumingya/universal-web-api'
+            }
+        }
+    },
     ai: {
+        apply: 'service',
         label: 'AI 分析配置',
         icon: '🤖',
         desc: '辅助 AI 用于自动分析页面结构',
@@ -473,6 +523,13 @@ const ENV_CONFIG_SCHEMA = {
                 label: 'API 地址',
                 type: 'text',
                 default: 'http://127.0.0.1:5104/v1'
+            },
+            HELPER_API_PROVIDER: {
+                label: 'API 提供商',
+                desc: '支持 auto、openai、gemini、claude',
+                type: 'select',
+                options: ['auto', 'openai', 'gemini', 'claude'],
+                default: 'auto'
             },
             HELPER_MODEL: {
                 label: '模型名称',
@@ -489,13 +546,14 @@ const ENV_CONFIG_SCHEMA = {
         }
     },
     files: {
+        apply: 'service',
         label: '配置文件',
         icon: '📁',
         items: {
             SITES_CONFIG_FILE: {
                 label: '站点配置文件路径',
                 type: 'text',
-                default: 'sites.json'
+                default: 'config/sites.json'
             }
         }
     }
@@ -1474,7 +1532,10 @@ const app = createApp({
             this.isLoadingEnv = true;
             try {
                 const data = await this.apiRequest('/api/settings/env');
-                this.envConfig = data.config || {};
+                this.envConfig = {
+                    ...this.getEnvDefaults(),
+                    ...(data.config || {})
+                };
                 this.envConfigOriginal = JSON.parse(JSON.stringify(this.envConfig));
             } catch (error) {
                 console.error('加载环境配置失败:', error);
@@ -1495,16 +1556,67 @@ const app = createApp({
             return defaults;
         },
 
+        normalizeEnvCompareValue(value) {
+            if (value === undefined || value === null) return '';
+            if (typeof value === 'boolean') return value ? 'true' : 'false';
+            return String(value);
+        },
+
+        getEnvFieldMeta(fieldKey) {
+            for (const group of Object.values(ENV_CONFIG_SCHEMA)) {
+                if (!group || !group.items || !Object.prototype.hasOwnProperty.call(group.items, fieldKey)) {
+                    continue;
+                }
+
+                const field = group.items[fieldKey] || {};
+                return {
+                    ...field,
+                    apply: field.apply || group.apply || 'service'
+                };
+            }
+
+            return null;
+        },
+
+        getEnvChangedKeys() {
+            const current = this.envConfig || {};
+            const original = this.envConfigOriginal || {};
+            const keys = new Set([
+                ...Object.keys(current),
+                ...Object.keys(original)
+            ]);
+
+            return Array.from(keys).filter((key) => {
+                return this.normalizeEnvCompareValue(current[key]) !== this.normalizeEnvCompareValue(original[key]);
+            });
+        },
+
         async saveEnvConfig() {
             this.isSavingEnv = true;
             try {
+                const changedKeys = this.getEnvChangedKeys();
                 await this.apiRequest('/api/settings/env', {
                     method: 'POST',
                     body: JSON.stringify({ config: this.envConfig })
                 });
 
                 this.envConfigOriginal = JSON.parse(JSON.stringify(this.envConfig));
-                this.notify('环境配置已保存（部分配置需重启生效）', 'success');
+                const launcherKeys = changedKeys.filter((key) => {
+                    return (this.getEnvFieldMeta(key)?.apply || 'service') === 'launcher';
+                });
+
+                if (launcherKeys.length > 0) {
+                    const launcherLabels = launcherKeys.map((key) => {
+                        return this.getEnvFieldMeta(key)?.label || key;
+                    }).join(', ');
+
+                    this.notify(
+                        '环境配置已保存。服务会自动重启，但以下启动型配置要完全生效，请关闭当前浏览器和脚本后重新运行 start.bat：' + launcherLabels,
+                        'warning'
+                    );
+                } else {
+                    this.notify('环境配置已保存，服务将自动重启后生效', 'success');
+                }
             } catch (error) {
                 this.notify('保存失败: ' + error.message, 'error');
             } finally {

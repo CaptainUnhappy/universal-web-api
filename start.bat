@@ -661,20 +661,52 @@ if !errorlevel! equ 0 set "DEBUG_PORT_OK=1"
 goto :eof
 
 :SetEnvVar
-REM 安全设置环境变量（处理包含括号的路径）
+REM Safely set env vars loaded from .env
 if not "%~1"=="" (
+    set "ENV_KEY=%~1"
     set "ENV_VAL=%~2"
+
+    REM Support "KEY = value"
+    set "ENV_KEY=!ENV_KEY: =!"
+
+    REM Strip one unexpected leading char, such as UTF-8 BOM
+    echo(!ENV_KEY!^| findstr /r "^[A-Za-z_][A-Za-z0-9_]*$" >nul 2>&1
+    if errorlevel 1 if defined ENV_KEY set "ENV_KEY=!ENV_KEY:~1!"
+
     if defined ENV_VAL (
+        REM Trim leading spaces from the value
+        for /f "tokens=* delims= " %%Z in ("!ENV_VAL!") do set "ENV_VAL=%%Z"
+        call :TrimTrailingSpaces ENV_VAL
+
         if "!ENV_VAL:~0,1!"=="^"" if "!ENV_VAL:~-1!"=="^"" set "ENV_VAL=!ENV_VAL:~1,-1!"
+        if "!ENV_VAL:~0,1!"=="'" if "!ENV_VAL:~-1!"=="'" set "ENV_VAL=!ENV_VAL:~1,-1!"
     )
-    set "%~1=!ENV_VAL!"
+
+    if defined ENV_KEY set "!ENV_KEY!=!ENV_VAL!"
+    set "ENV_KEY="
     set "ENV_VAL="
     set "ENV_LOADED=1"
 )
 goto :eof
 
+:TrimTrailingSpaces
+if "%~1"=="" goto :eof
+set "TRIM_VAR_NAME=%~1"
+call set "TRIM_VAR_VALUE=%%%TRIM_VAR_NAME%%%"
+if not defined TRIM_VAR_VALUE goto :trim_done
+:trim_loop
+if not defined TRIM_VAR_VALUE goto :trim_done
+if not "!TRIM_VAR_VALUE:~-1!"==" " goto :trim_done
+set "TRIM_VAR_VALUE=!TRIM_VAR_VALUE:~0,-1!"
+goto :trim_loop
+:trim_done
+call set "%TRIM_VAR_NAME%=%%TRIM_VAR_VALUE%%"
+set "TRIM_VAR_NAME="
+set "TRIM_VAR_VALUE="
+goto :eof
+
 :CheckCustomBrowser
-REM 检查用户自定义浏览器路径
+REM Check user-defined browser path
 if exist "!BROWSER_PATH!" (
     set "BROWSER_EXE=!BROWSER_PATH!"
     set "BROWSER_NAME=自定义浏览器"

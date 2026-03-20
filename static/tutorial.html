@@ -166,6 +166,81 @@
             max-width: 1200px;
         }
 
+        .page-header {
+            margin-bottom: 24px;
+        }
+
+        .page-header h1 {
+            margin-bottom: 12px;
+        }
+
+        .project-link-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-top: 18px;
+            padding: 18px 20px;
+            border-radius: 14px;
+            border: 1px solid rgba(37, 99, 235, 0.22);
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.12) 0%, rgba(59, 130, 246, 0.08) 100%);
+            box-shadow: 0 14px 30px rgba(37, 99, 235, 0.1);
+        }
+
+        .project-link-copy {
+            min-width: 0;
+        }
+
+        .project-link-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: var(--primary-color);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .project-link-copy p {
+            margin-bottom: 0;
+        }
+
+        .project-link-url {
+            display: inline-block;
+            margin-top: 8px;
+            color: var(--desc-color);
+            word-break: break-all;
+        }
+
+        .project-link-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 12px 20px;
+            min-width: 158px;
+            border-radius: 12px;
+            background: var(--primary-color);
+            color: #ffffff;
+            text-decoration: none;
+            font-weight: 700;
+            white-space: nowrap;
+            box-shadow: 0 10px 22px rgba(37, 99, 235, 0.25);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        }
+
+        .project-link-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 28px rgba(37, 99, 235, 0.32);
+            filter: brightness(1.02);
+        }
+
+        .project-link-button svg {
+            flex-shrink: 0;
+        }
+
         section {
             background: var(--card-bg);
             padding: 30px;
@@ -477,6 +552,15 @@
                 padding: 60px 16px 30px 16px;
             }
 
+            .project-link-banner {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .project-link-button {
+                width: 100%;
+            }
+
             h1 {
                 font-size: 1.4rem;
             }
@@ -532,6 +616,10 @@
                 font-size: 1.2rem;
             }
 
+            .project-link-banner {
+                padding: 14px;
+            }
+
             .site-card {
                 font-size: 0.85rem;
                 padding: 10px 12px;
@@ -581,11 +669,23 @@
     </div>
 
     <div class="main-content">
-        <h1 style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-            Universal Web-to-API 使用手册 (v2.5.8)
-            <a href="https://github.com/lumingya/universal-web-api" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; font-weight: 500; color: var(--text-color); text-decoration: none; background: var(--site-card-bg); border: 1px solid var(--border-color); padding: 6px 14px; border-radius: 8px; transition: all 0.2s;" onmouseover="this.style.borderColor='var(--primary-color)';this.style.color='var(--primary-color)';this.style.background='var(--info-bg)'" onmouseout="this.style.borderColor='var(--border-color)';this.style.color='var(--text-color)';this.style.background='var(--site-card-bg)'"
-            ><svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink:0;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>GitHub</a>
-        </h1>
+        <div class="page-header">
+            <h1>Universal Web-to-API 使用手册 (v2.6.4)</h1>
+            <div class="project-link-banner">
+                <div class="project-link-copy">
+                    <div class="project-link-label">
+                        <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+                        项目链接
+                    </div>
+                    <p>需要查看源码、更新说明或提 Issue 时，直接从这里进入仓库。</p>
+                    <code class="project-link-url">https://github.com/lumingya/universal-web-api</code>
+                </div>
+                <a class="project-link-button" href="https://github.com/lumingya/universal-web-api" target="_blank" rel="noopener noreferrer">
+                    <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+                    打开项目链接
+                </a>
+            </div>
+        </div>
 
         <!-- ==================== 快速开始 ==================== -->
         <section id="quick-start">
@@ -1873,6 +1973,35 @@ if session.error_count > 2:
                 <li><strong>预设管理</strong>: 每个站点的预设可以独立创建、删除、切换。预设的导出包含在站点配置中。</li>
                 <li><strong>备份</strong>: 建议定期备份 <code>config/</code> 目录。</li>
             </ul>
+
+            <div class="config-group">
+                <h4><span class="icon">🛠️</span> 更新白名单</h4>
+                <p>在控制面板 → 设置 → 更新白名单中修改。点击「保存」后会写入 <code>config/update_settings.json</code>，并在<strong>下次自动更新</strong>时生效。</p>
+                <ul>
+                    <li><strong>作用</strong>：它控制的是“更新时是否保留不变”，不是运行时启用/禁用开关。</li>
+                    <li><strong>目录项</strong>：勾选 <code>config/</code>、<code>app/</code>、<code>static/</code> 这类目录项时，会保留整个目录。</li>
+                    <li><strong>合并更新</strong>：<code>config/sites.json</code> 与 <code>config/commands.json</code> 在未勾选时默认会按更新器规则合并，尽量保留本地站点、命令和状态，同时补入发布版新增内容；如果勾选，则整份文件保持本地版本不动。</li>
+                    <li><strong>内部保留项</strong>：<code>config/update_settings.json</code> 会被更新器自动保留，无需手动勾选。</li>
+                </ul>
+            </div>
+
+            <div class="note">
+                <p><strong>当前默认保留项：</strong></p>
+                <ul>
+                    <li><code>config/sites.local.json</code>：站点默认预设覆盖</li>
+                    <li><code>config/commands.local.json</code>：命令启用状态与分组覆盖</li>
+                    <li><code>chrome_profile/</code>：浏览器登录态、Cookie 与用户目录</li>
+                    <li><code>venv/</code>：Python 虚拟环境</li>
+                    <li><code>logs/</code>：日志目录</li>
+                    <li><code>image/</code>：图片输出目录</li>
+                    <li><code>updater.py</code>：更新脚本本体</li>
+                    <li><code>.git/</code>：Git 元数据目录</li>
+                    <li><code>__pycache__/</code>：Python 缓存目录</li>
+                    <li><code>*.pyc</code>：Python 编译缓存文件</li>
+                    <li><code>backup_*/</code>：更新前备份目录</li>
+                </ul>
+                <p style="margin-bottom: 0;">可勾选范围覆盖核心配置、本地覆盖、运行数据、后端代码、前端资源、脚本与文档、开发文件。只是想保留登录态和个人配置时，通常保持默认勾选即可。</p>
+            </div>
 
             <div class="highlight-box">
                 <p><strong>⚠️ 警告：</strong>目前可视化编辑器<strong>没有撤销功能</strong>！一旦保存无法快捷复原，请务必谨慎修改。</p>
