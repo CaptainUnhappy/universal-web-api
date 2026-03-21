@@ -1,14 +1,18 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
 REM ===============================
 REM Universal Web-to-API 启动脚本
 REM v2.3 - DrissionPage 反检测补丁
 REM ===============================
 
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("!SCRIPT_DIR!.") do cd /d "%%~fI"
 set "PROJECT_DIR=%cd%"
+set "SCRIPT_DIR="
 
 echo.
 echo ========================================
@@ -439,91 +443,83 @@ echo [STEP] 准备 Chromium 内核浏览器
 echo ----------------------------------------
 
 if defined BROWSER_PROFILE_DIR (
-    set "PROFILE_DIR=%BROWSER_PROFILE_DIR%"
+    set "PROFILE_DIR=!BROWSER_PROFILE_DIR!"
 ) else (
-    set "PROFILE_DIR=%PROJECT_DIR%\chrome_profile"
+    set "PROFILE_DIR=!PROJECT_DIR!\chrome_profile"
 )
-if not exist "%PROFILE_DIR%" mkdir "%PROFILE_DIR%" >nul 2>&1
-echo [INFO] 浏览器配置目录: %PROFILE_DIR%
+if not exist "!PROFILE_DIR!" mkdir "!PROFILE_DIR!" >nul 2>&1
+echo [INFO] 浏览器配置目录: !PROFILE_DIR!
 
-REM 每次启动前自动清理配置文件
-if /I "%PROFILE_CLEAN_ENABLED%"=="true" (
+REM Clean profile data before launch when enabled.
+if /I "!PROFILE_CLEAN_ENABLED!"=="true" (
     if exist "clean_profile.py" (
         echo [INFO] 执行浏览器配置瘦身...
-        venv\Scripts\python.exe clean_profile.py "%PROFILE_DIR%"
+        venv\Scripts\python.exe clean_profile.py "!PROFILE_DIR!"
         echo.
     ) else (
         echo [WARN] 未找到 clean_profile.py，跳过清理
         echo.
     )
 ) else (
-    echo [INFO] 已禁用配置瘦身（PROFILE_CLEAN_ENABLED=%PROFILE_CLEAN_ENABLED%）
+    echo [INFO] 已禁用配置瘦身（PROFILE_CLEAN_ENABLED=!PROFILE_CLEAN_ENABLED!）
     echo.
 )
 
-REM 检查调试端口
+REM Reuse an existing debugging browser when the port is already ready.
 call :check_debug_port
 if "!DEBUG_PORT_OK!"=="1" (
     echo [WARN] Debug port already in use, reuse existing browser instance.
     echo [WARN] If background tabs are slow, close browser and restart this script.
     echo [WARN] Restart lets script launch browser with anti-throttle flags.
-    echo [OK] Debug port ready - %BROWSER_PORT%
+    echo [OK] Debug port ready - !BROWSER_PORT!
     goto :BROWSER_READY
 )
 
 echo [INFO] 正在查找可用的 Chromium 内核浏览器...
 
-REM 初始化变量
 set "BROWSER_EXE="
 set "BROWSER_NAME="
 
-REM ========== 优先级1: 用户自定义路径 ==========
 if defined BROWSER_PATH call :CheckCustomBrowser
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 优先级2: Chrome ==========
 call :CheckBrowser "C:\Program Files\Google\Chrome\Application\chrome.exe" "Chrome"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
 call :CheckBrowser "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" "Chrome"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-set "TEST_PATH=%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+set "TEST_PATH=!LOCALAPPDATA!\Google\Chrome\Application\chrome.exe"
 call :CheckBrowser "!TEST_PATH!" "Chrome"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 优先级3: Microsoft Edge ==========
 call :CheckBrowser "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" "Edge"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
 call :CheckBrowser "C:\Program Files\Microsoft\Edge\Application\msedge.exe" "Edge"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 优先级4: Brave ==========
-set "TEST_PATH=%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"
+set "TEST_PATH=!LOCALAPPDATA!\BraveSoftware\Brave-Browser\Application\brave.exe"
 call :CheckBrowser "!TEST_PATH!" "Brave"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
 call :CheckBrowser "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" "Brave"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 优先级5: Vivaldi ==========
-set "TEST_PATH=%LOCALAPPDATA%\Vivaldi\Application\vivaldi.exe"
+set "TEST_PATH=!LOCALAPPDATA!\Vivaldi\Application\vivaldi.exe"
 call :CheckBrowser "!TEST_PATH!" "Vivaldi"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
 call :CheckBrowser "C:\Program Files\Vivaldi\Application\vivaldi.exe" "Vivaldi"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 优先级6: Opera ==========
-set "TEST_PATH=%LOCALAPPDATA%\Programs\Opera\opera.exe"
+set "TEST_PATH=!LOCALAPPDATA!\Programs\Opera\opera.exe"
 call :CheckBrowser "!TEST_PATH!" "Opera"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
 call :CheckBrowser "C:\Program Files\Opera\opera.exe" "Opera"
 if defined BROWSER_EXE goto :BROWSER_FOUND
 
-REM ========== 未找到任何浏览器 ==========
 echo.
 echo [ERROR] 找不到任何可用的 Chromium 内核浏览器
 echo.
@@ -545,27 +541,24 @@ exit /b 1
 echo [OK] 检测到 !BROWSER_NAME!
 echo [INFO] 路径: !BROWSER_EXE!
 
-REM 构造浏览器启动参数
-set "BROWSER_ARGS=--remote-debugging-port=%BROWSER_PORT% --user-data-dir=""%PROFILE_DIR%"" --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,AutomaticTabDiscarding,TabFreeze,IntensiveWakeUpThrottling"
+set "BROWSER_ARGS=--remote-debugging-port=!BROWSER_PORT! --user-data-dir=!PROFILE_DIR! --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,AutomaticTabDiscarding,TabFreeze,IntensiveWakeUpThrottling"
 if defined BROWSER_PROFILE_NAME (
-    set "BROWSER_ARGS=!BROWSER_ARGS! --profile-directory=""%BROWSER_PROFILE_NAME%"""
+    set "BROWSER_ARGS=!BROWSER_ARGS! --profile-directory=!BROWSER_PROFILE_NAME!"
 )
 
-REM 添加代理参数（如果启用）
-if /I "%PROXY_ENABLED%"=="true" (
+if /I "!PROXY_ENABLED!"=="true" (
     if defined PROXY_ADDRESS (
-        set "BROWSER_ARGS=!BROWSER_ARGS! --proxy-server=%PROXY_ADDRESS%"
+        set "BROWSER_ARGS=!BROWSER_ARGS! --proxy-server=!PROXY_ADDRESS!"
         if defined PROXY_BYPASS (
-            set "BROWSER_ARGS=!BROWSER_ARGS! --proxy-bypass-list=%PROXY_BYPASS%"
+            set "BROWSER_ARGS=!BROWSER_ARGS! --proxy-bypass-list=!PROXY_BYPASS!"
         )
-        echo [INFO] 代理已启用: %PROXY_ADDRESS%
+        echo [INFO] 代理已启用: !PROXY_ADDRESS!
     )
 )
 
-REM 启动浏览器
+echo [INFO] 启动浏览器...
 start "" "!BROWSER_EXE!" !BROWSER_ARGS! about:blank
 
-REM 等待端口就绪
 echo [INFO] 等待 !BROWSER_NAME! 就绪...
 set "WAIT_COUNT=0"
 :WAIT_LOOP
@@ -578,9 +571,14 @@ goto :WAIT_LOOP
 
 :WAIT_DONE
 if "!DEBUG_PORT_OK!"=="1" (
-    echo [OK] !BROWSER_NAME! 启动成功 - 端口 %BROWSER_PORT%
+    echo [OK] !BROWSER_NAME! 启动成功 - 端口 !BROWSER_PORT!
 ) else (
-    echo [WARN] !BROWSER_NAME! 启动超时，但会继续尝试
+    echo [WARN] !BROWSER_NAME! 启动超时
+    echo [ERROR] 未检测到远程调试端口 !BROWSER_PORT!，为避免服务误连到错误的浏览器，本次启动已中止
+    echo [INFO] 当前建议使用独立的无空格配置目录，例如 C:\Users\QIU\AppData\Local\UniversalWebApiProfile
+    echo.
+    pause
+    exit /b 1
 )
 
 :BROWSER_READY

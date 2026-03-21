@@ -170,6 +170,8 @@ class WorkflowExecutor:
         # 🆕 初始化双 Monitor（优先网络，回退 DOM）
         self._network_monitor = None
         self._stream_monitor = None
+        self._last_input_element = None
+        self._last_input_target_key = ""
         
         # 检查是否启用网络监听模式
         self._stream_mode = stream_config.get("mode", "dom") if stream_config else "dom"
@@ -1513,23 +1515,47 @@ class WorkflowExecutor:
     def _safe_get_input_len_by_key(self, target_key: str) -> int:
         """读取输入框当前长度"""
         try:
-            ele = None
-            try:
-                ele = self.tab.run_js("return document.activeElement")
-            except Exception:
-                ele = None
+            candidates = []
 
-            if ele:
-                n = self.tab.run_js("""
-                    try {
-                        const el = arguments[0];
-                        const tag = (el.tagName || '').toLowerCase();
-                        if (tag === 'textarea' || tag === 'input') return (el.value || '').length;
-                        if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return (el.innerText || '').length;
-                        return (el.textContent || '').length;
-                    } catch(e){ return 0; }
-                """, ele)
-                return int(n) if n is not None else 0
+            if target_key and target_key == getattr(self, "_last_input_target_key", ""):
+                last_ele = getattr(self, "_last_input_element", None)
+                if last_ele:
+                    candidates.append(last_ele)
+
+            selector = ""
+            if isinstance(self._selectors, dict):
+                selector = str(self._selectors.get(target_key, "") or "").strip()
+
+            if selector or target_key:
+                try:
+                    ele = self.finder.find_with_fallback(selector, target_key, timeout=0.2)
+                except Exception:
+                    ele = None
+                if ele:
+                    candidates.append(ele)
+
+            try:
+                active_ele = self.tab.run_js("return document.activeElement")
+            except Exception:
+                active_ele = None
+            if active_ele:
+                candidates.append(active_ele)
+
+            for ele in candidates:
+                try:
+                    n = self.tab.run_js("""
+                        try {
+                            const el = arguments[0];
+                            const tag = (el.tagName || '').toLowerCase();
+                            if (tag === 'textarea' || tag === 'input') return (el.value || '').length;
+                            if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return (el.innerText || '').length;
+                            return (el.textContent || '').length;
+                        } catch(e){ return 0; }
+                    """, ele)
+                except Exception:
+                    continue
+                if n is not None:
+                    return int(n)
 
             return 0
         except Exception:
@@ -1620,6 +1646,9 @@ class WorkflowExecutor:
             if not optional:
                 raise ElementNotFoundError("找不到输入框")
             return
+
+        self._last_input_element = ele
+        self._last_input_target_key = target_key or ""
 
         # 🆕 隐身模式：人类化点击聚焦输入框 + 剪贴板粘贴
         if self.stealth_mode:

@@ -645,6 +645,7 @@
             <span id="themeText">夜间模式</span>
         </button>
         <nav>
+            <a href="#author-note" class="nav-link">⚠️ 作者的话（必看）</a>
             <a href="#quick-start" class="nav-link">🚀 快速开始</a>
             <a href="#dashboard-tour" class="nav-link">🖥️ 控制台导览</a>
             <a href="#add-site-guide" class="nav-link">🆕 新增站点</a>
@@ -670,7 +671,7 @@
 
     <div class="main-content">
         <div class="page-header">
-            <h1>Universal Web-to-API 使用手册 (v2.6.4)</h1>
+            <h1>Universal Web-to-API 使用手册 (v2.6.5)</h1>
             <div class="project-link-banner">
                 <div class="project-link-copy">
                     <div class="project-link-label">
@@ -687,13 +688,75 @@
             </div>
         </div>
 
+        <!-- ==================== 作者的话 ==================== -->
+        <section id="author-note">
+            <h2>⚠️ 作者的话（必看）</h2>
+            <p><strong>想商业化的可以洗洗睡了，本项目不会也无法提供商业化，并发存在硬上限。</strong></p>
+
+            <div class="config-group">
+                <h4><span class="icon">1️⃣</span> 函数调用目前问题很多</h4>
+                <p><code>Function Calling</code> 这块目前还有不少问题，<strong>极其依赖 AI 本身的理解能力</strong>。换句话说，它不是一个已经完全收敛、可以闭眼依赖的稳定功能，用的时候请降低预期，多做实测。</p>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">2️⃣</span> 作者主要维护 Gemini，其它站点不保证及时跟进</h4>
+                <p>作者本人平时主要使用的是 <strong>Gemini</strong> 站点，因此其它站点并不能保证及时维护。出了问题更推荐<strong>加群反馈</strong>，<strong>不建议发 Issue，也不建议去 Discord 反馈</strong>，因为作者基本不看。</p>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">3️⃣</span> 有问题优先先问 AI</h4>
+                <p>很多问题其实不需要等作者处理，尤其是选择器失效、配置写错、工作流顺序不对这类问题。<strong>优先把现象、日志、元素树交给 AI 帮你分析</strong>，通常会比直接等回复更快。</p>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">4️⃣</span> 站点不能用时，优先怀疑选择器；其次才是解析器</h4>
+                <p>一般来说，一个站点突然不能用了，不是解析器出问题了，就是选择器出问题了，而<strong>更常见的是选择器失效</strong>。</p>
+
+                <div class="note">
+                    <p><strong>选择器更新其实很简单：</strong></p>
+                    <ol>
+                        <li>在页面上对想点击或想读取的元素右键，选择“检查”。</li>
+                        <li>把对应的元素树截图或复制出来。</li>
+                        <li>把这段元素树发给 AI，让 AI 告诉你新的选择器应该怎么写。</li>
+                    </ol>
+                </div>
+
+                <div class="note">
+                    <p><strong>解析器问题会麻烦一些：</strong>如果是解析器出问题，通常需要拦截网络请求、看响应结构，再做逆向分析。这比改选择器麻烦得多。</p>
+                </div>
+
+                <div class="info-box">
+                    <p><strong>能自己更新就尽量自己更新：</strong>如果你已经修好了，欢迎把更新后的配置文件或代码文件发给作者，作者会非常感谢你。</p>
+                </div>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">5️⃣</span> 反馈 Bug 请描述清楚，并尽量附上 DEBUG 日志</h4>
+                <p>如果要反馈 Bug，请尽量把问题描述清楚一点，并提供 <strong>DEBUG 级别日志</strong>。如果你觉得自己表达不清楚，<strong>先让 AI 帮你整理一下语言再发</strong>，因为作者有时候确实听不太懂对方到底想表达什么。</p>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">6️⃣</span> 教程虽然覆盖很全，但细节不一定写透</h4>
+                <p>这个教程文件已经尽量把主要功能都覆盖了，但很多细节没有写到特别展开。你如果有能力，也欢迎一起补充和完善文档。</p>
+            </div>
+
+            <div class="config-group">
+                <h4><span class="icon">7️⃣</span> 很多功能本质上是为酒馆 / RP 场景服务的</h4>
+                <p>作者本人主要玩的还是酒馆之类的 <strong>RP 场景</strong>，因此很多功能本来就是为这个目标服务的。换句话说，除此之外的一些功能，维护上基本属于“放养”状态，请理解这一点。</p>
+            </div>
+        </section>
+
         <!-- ==================== 快速开始 ==================== -->
         <section id="quick-start">
             <h2>🚀 快速开始</h2>
             <p>欢迎使用 Web-to-API。本项目将网页版 AI 对话界面转换为标准 OpenAI 兼容 API。</p>
 
+            <div class="highlight-box">
+                <p><strong>第一次使用建议：</strong>先看完上面的「作者的话（必看）」再继续。它能帮你快速判断哪些问题该先自己排查，哪些反馈方式作者更容易看到。</p>
+            </div>
+
             <div class="info-box">
-                <p><strong>📌 核心提示：</strong> 脚本启动后会自动打开一个受控浏览器窗口，<strong style="color: var(--highlight-border);">请保持该浏览器窗口处于开启状态</strong>，它是服务运行的基础。教程页现在不会再自动在受控浏览器中打开，你可以在普通浏览器里开着这份文档边看边配。</p>
+                <p><strong>📌 核心提示：</strong> 脚本启动后会自动打开一个受控浏览器窗口，<strong style="color: var(--highlight-border);">请保持该浏览器窗口处于开启状态</strong>，它是服务运行的基础。系统浏览器会自动打开这份教程页，你可以边看边配；而受控浏览器仍然只负责跑站点，不建议拿来手动乱点。</p>
             </div>
 
             <div class="note">
@@ -1850,6 +1913,47 @@ if session.error_count > 2:
             </div>
 
             <div class="config-group">
+                <h4><span class="icon">🧳</span> 想沿用自己的浏览器登录态，应该怎么配？</h4>
+                <p>如果你希望脚本启动后直接继承自己平时浏览器里的登录状态、Cookie 和扩展，请使用 <strong>独立复制出来的用户数据目录</strong>，不要直接把脚本指向你日常正在使用的系统默认目录。</p>
+
+                <div class="highlight-box">
+                    <p><strong>⚠️ 重要：</strong>从 <strong>Chrome 136</strong> 开始，Chrome 对远程调试做了安全调整，<strong>默认 Chrome 数据目录</strong>不再接受 <code>--remote-debugging-port</code>。如果你把 <code>BROWSER_PROFILE_DIR</code> 直接写成系统默认的 <code>User Data</code>，浏览器可能会被打开，但调试端口不会真正起来，脚本也就无法接管它。Chrome 官方说明见：<a href="https://developer.chrome.com/blog/remote-debugging-port" target="_blank" rel="noopener noreferrer">Changes to remote debugging switches to improve security</a>。</p>
+                </div>
+
+                <h5>推荐做法：复制一份专用用户目录</h5>
+                <ol>
+                    <li>先完全关闭所有 Chrome 窗口。</li>
+                    <li>新建一个专用目录，例如 <code>C:\Users\你的用户名\AppData\Local\UniversalWebApiProfile</code>。</li>
+                    <li>从原始目录 <code>C:\Users\你的用户名\AppData\Local\Google\Chrome\User Data</code> 中，至少复制 <code>Local State</code> 和你要使用的配置子目录（如 <code>Default</code>、<code>Profile 1</code>）到这个新目录。</li>
+                    <li>在 <code>.env</code> 中把脚本指向这份副本，然后重新运行 <code>start.bat</code>。</li>
+                </ol>
+
+                <pre><code>BROWSER_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
+BROWSER_PROFILE_DIR=C:\Users\你的用户名\AppData\Local\UniversalWebApiProfile
+BROWSER_PROFILE_NAME=Default</code></pre>
+
+                <div class="note">
+                    <p><strong>字段含义：</strong></p>
+                    <ul>
+                        <li><code>BROWSER_PATH</code>：浏览器程序路径。</li>
+                        <li><code>BROWSER_PROFILE_DIR</code>：用户数据根目录，应该指向 <code>User Data</code> 这一层，或者你复制出来的专用目录。</li>
+                        <li><code>BROWSER_PROFILE_NAME</code>：具体配置名称，常见值是 <code>Default</code>、<code>Profile 1</code>、<code>Profile 2</code>。</li>
+                    </ul>
+                </div>
+
+                <div class="highlight-box">
+                    <p><strong>容易写错的地方：</strong><code>BROWSER_PROFILE_DIR</code> <strong>不要</strong>写成 <code>...\User Data\Default</code>。正确写法是：</p>
+                    <pre><code>BROWSER_PROFILE_DIR=C:\Users\你的用户名\AppData\Local\Google\Chrome\User Data
+BROWSER_PROFILE_NAME=Default</code></pre>
+                    <p style="margin-bottom: 0;">也就是说，<code>BROWSER_PROFILE_DIR</code> 写“根目录”，<code>BROWSER_PROFILE_NAME</code> 写“具体配置名”。</p>
+                </div>
+
+                <div class="info-box">
+                    <p><strong>如果你不在乎沿用自己的登录态：</strong>最省心的方式是留空 <code>BROWSER_PROFILE_DIR</code>，让项目继续使用根目录下的 <code>chrome_profile/</code>。这样隔离最彻底，也最不容易和日常 Chrome 互相影响。</p>
+                </div>
+            </div>
+
+            <div class="config-group">
                 <h4><span class="icon">📊</span> Dashboard 配置</h4>
                 <table>
                     <tr><th>配置项</th><th>默认值</th><th>说明</th></tr>
@@ -2068,7 +2172,16 @@ if session.error_count > 2:
                 </ol>
             </div>
 
-            <h3>Q8: 这个项目有什么用？</h3>
+            <h3>Q8: 我想直接使用自己原来的 Chrome 登录态，为什么配了还是不生效？</h3>
+            <p>A: 最常见的原因有三个：</p>
+            <ul>
+                <li><strong>直接指向了系统默认 <code>User Data</code></strong>：在 Chrome 136+ 上，这通常会导致浏览器虽然打开了，但远程调试端口起不来。请改为复制出一份独立目录，再把脚本指向那份副本。</li>
+                <li><strong><code>BROWSER_PROFILE_DIR</code> 写错层级</strong>：它应该写到 <code>User Data</code> 这一层，而不是 <code>...\User Data\Default</code>。具体配置名请写在 <code>BROWSER_PROFILE_NAME</code>。</li>
+                <li><strong>配置改完没重启启动脚本</strong>：这类浏览器启动配置必须重新运行 <code>start.bat</code> 才会生效。</li>
+            </ul>
+            <p>详细步骤请回看上方「环境配置 → 想沿用自己的浏览器登录态，应该怎么配？」这一节。</p>
+
+            <h3>Q9: 这个项目有什么用？</h3>
             <p>A: 这是一个「白嫖」项目，主要用途包括：</p>
             <ul>
                 <li><strong>免费额度利用</strong>：很多 AI 厂商在网页端有相当多的免费额度（如 DeepSeek、AI Studio、Arena AI 等），本项目能将网页额度转化为 OpenAI 格式的 API，供前端调用。</li>

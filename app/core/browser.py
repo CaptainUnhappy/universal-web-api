@@ -19,7 +19,7 @@ import threading
 import time
 import contextlib
 from typing import Optional, List, Dict, Any, Generator, Callable
-from DrissionPage import ChromiumPage
+from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.config import (
     logger,
@@ -363,7 +363,10 @@ class BrowserCore:
     def _connect(self) -> bool:
         try:
             logger.debug(f"连接浏览器 127.0.0.1:{self.port}")
-            self.page = ChromiumPage(addr_or_opts=f"127.0.0.1:{self.port}")
+            opts = ChromiumOptions()
+            opts.set_address(f"127.0.0.1:{self.port}")
+            opts.existing_only()
+            self.page = ChromiumPage(addr_or_opts=opts)
             self._connected = True
             logger.info("浏览器连接成功")
             return True

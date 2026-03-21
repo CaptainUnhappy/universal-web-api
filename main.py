@@ -87,8 +87,8 @@ _setup_windows_event_loop_policy()
 
 # ================= Lifespan =================
 
-def _open_dashboard_non_blocking(dashboard_url: str, initial_delay_sec: float = 1.2):
-    """Use the system browser for the local dashboard, not the controlled browser."""
+def _open_startup_page_non_blocking(page_url: str, page_name: str, initial_delay_sec: float = 1.2):
+    """Use the system browser for a local startup page, not the controlled browser."""
     def _worker():
         try:
             time.sleep(max(0.0, float(initial_delay_sec)))
@@ -97,7 +97,7 @@ def _open_dashboard_non_blocking(dashboard_url: str, initial_delay_sec: float = 
             ready = False
             for _ in range(12):
                 try:
-                    with urlopen(dashboard_url, timeout=1.2) as resp:
+                    with urlopen(page_url, timeout=1.2) as resp:
                         status_code = int(getattr(resp, "status", 200) or 200)
                         if 200 <= status_code < 500:
                             ready = True
@@ -106,18 +106,18 @@ def _open_dashboard_non_blocking(dashboard_url: str, initial_delay_sec: float = 
                     time.sleep(0.5)
 
             if not ready:
-                logger.warning(f"[startup] 控制面板未就绪，跳过自动打开: {dashboard_url}")
+                logger.warning(f"[startup] {page_name}未就绪，跳过自动打开: {page_url}")
                 return
 
-            webbrowser.open_new_tab(dashboard_url)
-            logger.info(f"[startup] 控制面板已在系统浏览器打开: {dashboard_url}")
+            webbrowser.open_new_tab(page_url)
+            logger.info(f"[startup] {page_name}已在系统浏览器打开: {page_url}")
         except Exception as e:
-            logger.warning(f"[startup] 打开控制面板失败: {e}")
+            logger.warning(f"[startup] 打开{page_name}失败: {e}")
 
     threading.Thread(
         target=_worker,
         daemon=True,
-        name="open-tutorial-non-blocking",
+        name="open-startup-page-non-blocking",
     ).start()
 
 
@@ -181,35 +181,37 @@ async def lifespan(app: FastAPI):
         health = browser.health_check()
     
         if health["connected"]:
-            # 检查是否需要打开控制面板（仅当浏览器刚启动、没有实际内容时）
-            should_open_dashboard = False
+            # 检查是否需要自动打开教程页（仅当浏览器刚启动、没有实际内容时）
+            should_open_tutorial = False
             
             try:
                 tab_ids = browser.page.get_tabs()
                 
                 if len(tab_ids) == 0:
                     # 没有任何标签页
-                    should_open_dashboard = True
+                    should_open_tutorial = True
                 elif len(tab_ids) == 1:
                     # 只有一个标签页，检查是否是空白页
                     url = browser.page.url or ""
                     blank_patterns = ("about:blank", "chrome://newtab/", "chrome://new-tab-page/", "")
                     if url in blank_patterns:
-                        should_open_dashboard = True
-                # 多个标签页 = 用户已在使用，不打开控制面板
+                        should_open_tutorial = True
+                # 多个标签页 = 用户已在使用，不自动打开教程
                 
             except Exception as e:
                 logger.debug(f"检查标签页状态失败: {e}")
             
-            if should_open_dashboard and AppConfig.is_dashboard_enabled():
+            if should_open_tutorial:
                 try:
-                    dashboard_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}/"
-                    logger.info(f"[startup] 首次启动，使用系统浏览器打开控制面板: {dashboard_url}")
-                    _open_dashboard_non_blocking(dashboard_url, initial_delay_sec=1.2)
+                    tutorial_url = f"http://{AppConfig.get_host()}:{AppConfig.get_port()}/static/tutorial.html"
+                    logger.info(f"[startup] 首次启动，使用系统浏览器打开教程页: {tutorial_url}")
+                    _open_startup_page_non_blocking(
+                        tutorial_url,
+                        page_name="教程页",
+                        initial_delay_sec=1.2,
+                    )
                 except Exception as e:
-                    logger.warning(f"⚠️ 无法打开控制面板: {e}")
-            elif should_open_dashboard:
-                logger.info("[startup] Dashboard 已禁用，跳过自动打开")
+                    logger.warning(f"⚠️ 无法打开教程页: {e}")
             else:
                 # 显示已连接状态
                 pool_info = health.get("tab_pool", {})
