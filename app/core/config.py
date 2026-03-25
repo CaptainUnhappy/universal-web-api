@@ -112,7 +112,7 @@ class AppConfig:
     
     @staticmethod
     def get_dashboard_file() -> str:
-        return os.getenv("DASHBOARD_FILE", "dashboard.html")
+        return os.getenv("DASHBOARD_FILE", "static/index.html")
     
     # ===== AI 分析配置 =====
     @staticmethod

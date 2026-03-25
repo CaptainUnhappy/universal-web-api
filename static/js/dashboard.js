@@ -561,7 +561,7 @@ const ENV_CONFIG_SCHEMA = {
             DASHBOARD_FILE: {
                 label: 'Dashboard 文件路径',
                 type: 'text',
-                default: 'dashboard.html'
+                default: 'static/index.html'
             }
         }
     },
