@@ -147,6 +147,10 @@ class AppConfig:
         return os.getenv("MARKETPLACE_FILE", "config/marketplace.json")
 
     @staticmethod
+    def get_marketplace_cache_file() -> str:
+        return os.getenv("MARKETPLACE_CACHE_FILE", "config/marketplace_cache.json")
+
+    @staticmethod
     def get_marketplace_index_url() -> str:
         explicit_url = os.getenv("MARKETPLACE_INDEX_URL", "").strip()
         if explicit_url:
@@ -196,6 +200,18 @@ class AppConfig:
         return f"https://github.com/{repo}" if repo else ""
 
     @staticmethod
+    def get_marketplace_github_token() -> str:
+        token = os.getenv("MARKETPLACE_GITHUB_TOKEN", "").strip()
+        if token:
+            return token
+
+        token = os.getenv("GITHUB_TOKEN", "").strip()
+        if token:
+            return token
+
+        return os.getenv("GH_TOKEN", "").strip()
+
+    @staticmethod
     def get_marketplace_branch() -> str:
         return os.getenv("MARKETPLACE_GITHUB_BRANCH", "main").strip() or "main"
 
@@ -208,6 +224,28 @@ class AppConfig:
         return os.getenv("MARKETPLACE_ISSUE_TEMPLATE", "marketplace_submission.md").strip()
 
     @staticmethod
+    def get_marketplace_issues_api_url() -> str:
+        explicit_url = os.getenv("MARKETPLACE_ISSUES_API_URL", "").strip()
+        if explicit_url:
+            return explicit_url
+
+        repo = AppConfig.get_marketplace_repo()
+        if not repo:
+            return ""
+        return f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100"
+
+    @staticmethod
+    def get_marketplace_issues_web_url() -> str:
+        explicit_url = os.getenv("MARKETPLACE_ISSUES_WEB_URL", "").strip()
+        if explicit_url:
+            return explicit_url
+
+        repo_url = AppConfig.get_marketplace_repo_url()
+        if not repo_url:
+            return ""
+        return f"{repo_url}/issues?q=is%3Aissue+is%3Aopen"
+
+    @staticmethod
     def get_marketplace_submit_mode() -> str:
         mode = os.getenv("MARKETPLACE_SUBMIT_MODE", "auto").strip().lower()
         if mode == "local":
@@ -215,6 +253,15 @@ class AppConfig:
         if mode in ("external", "redirect", "github", "public"):
             return "external"
         return "external" if AppConfig.get_marketplace_upload_url() else "local"
+
+    @staticmethod
+    def is_marketplace_pending_enabled() -> bool:
+        raw_value = os.getenv("MARKETPLACE_PENDING_ENABLED", "").strip().lower()
+        if raw_value in ("true", "1", "yes", "on"):
+            return True
+        if raw_value in ("false", "0", "no", "off"):
+            return False
+        return bool(AppConfig.get_marketplace_issues_api_url())
 
     @staticmethod
     def is_marketplace_local_overlay_enabled() -> bool:

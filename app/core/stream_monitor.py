@@ -8,6 +8,7 @@ v5.5 修改：
 - 新增 _image_config 配置支持
 """
 
+import re
 import time
 import threading
 from typing import Generator, Optional, Callable, Tuple, Dict, List, Any
@@ -16,6 +17,11 @@ from app.core.config import logger, BrowserConstants, SSEFormatter
 from app.core.elements import ElementFinder
 from app.core.extractors.base import BaseExtractor
 from app.core.extractors.deep_mode import DeepBrowserExtractor
+
+_GEMINI_IMAGE_PLACEHOLDER_RE = re.compile(
+    r"^\s*https?://(?:[\w.-]+\.)?googleusercontent\.com/image_generation_content/\d+\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 class StreamContext:
@@ -207,6 +213,15 @@ class StreamMonitor:
         self._final_complete_text = ""
         self._final_images: List[Dict] = []
         self._generating_checker: Optional[GeneratingStatusCache] = None
+
+    def _sanitize_stream_text(self, text: str) -> str:
+        if not text:
+            return ""
+
+        sanitized = _GEMINI_IMAGE_PLACEHOLDER_RE.sub("", text)
+        if sanitized != text:
+            sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+        return sanitized
 
     def monitor(self, selector: str, user_input: str = "",
                 completion_id: Optional[str] = None) -> Generator[str, None, None]:
@@ -606,11 +621,15 @@ class StreamMonitor:
                 # 发送当前完整内容
                 full_content = current_text[ctx.active_turn_baseline_len:]
                 if full_content:
-                    yield self.formatter.pack_chunk(full_content, completion_id=completion_id)
                     ctx.update_after_send(full_content, current_text)
-                    silence_start = time.time()
-                    has_output = True
-                    ctx.content_ever_changed = True
+                    visible_content = self._sanitize_stream_text(full_content)
+                    if visible_content.strip():
+                        yield self.formatter.pack_chunk(visible_content, completion_id=completion_id)
+                        silence_start = time.time()
+                        has_output = True
+                        ctx.content_ever_changed = True
+                    else:
+                        logger.debug("[STREAM] Suppressed Gemini placeholder-only chunk after rewrite")
                 
                 continue
             
@@ -618,12 +637,15 @@ class StreamMonitor:
                 if self._should_stop():
                     break
                 ctx.update_after_send(diff, current_text)
-                silence_start = time.time()
-                has_output = True
                 current_interval = min_interval
-                ctx.content_ever_changed = True
-
-                yield self.formatter.pack_chunk(diff, completion_id=completion_id)
+                visible_diff = self._sanitize_stream_text(diff)
+                if visible_diff.strip():
+                    silence_start = time.time()
+                    has_output = True
+                    ctx.content_ever_changed = True
+                    yield self.formatter.pack_chunk(visible_diff, completion_id=completion_id)
+                else:
+                    logger.debug("[STREAM] Suppressed Gemini placeholder-only chunk")
             else:
                 if current_text == ctx.last_stable_text:
                     ctx.stable_text_count += 1
@@ -728,11 +750,17 @@ class StreamMonitor:
             if len(final_text) > final_effective_start:
                 remaining = final_text[final_effective_start:]
                 if remaining:
-                    logger.debug(f"[Final] 发送剩余内容: {len(remaining)} 字符")
-                    yield self.formatter.pack_chunk(remaining, completion_id=completion_id)
                     ctx.sent_content_length += len(remaining)
+                    visible_remaining = self._sanitize_stream_text(remaining)
+                    if visible_remaining.strip():
+                        logger.debug(f"[Final] 发送剩余内容: {len(remaining)} 字符")
+                        yield self.formatter.pack_chunk(visible_remaining, completion_id=completion_id)
+                    else:
+                        logger.debug("[Final] Suppressed Gemini placeholder-only remainder")
 
-            self._final_complete_text = final_text[ctx.active_turn_baseline_len:]
+            self._final_complete_text = self._sanitize_stream_text(
+                final_text[ctx.active_turn_baseline_len:]
+            )
         else:
             fallback_text = self._get_active_turn_text(selector)
             if fallback_text:
@@ -740,12 +768,20 @@ class StreamMonitor:
                 if len(fallback_text) > final_effective_start:
                     remaining = fallback_text[final_effective_start:]
                     if remaining:
-                        yield self.formatter.pack_chunk(remaining, completion_id=completion_id)
                         ctx.sent_content_length += len(remaining)
+                        visible_remaining = self._sanitize_stream_text(remaining)
+                        if visible_remaining.strip():
+                            yield self.formatter.pack_chunk(visible_remaining, completion_id=completion_id)
+                        else:
+                            logger.debug("[Final] Suppressed Gemini placeholder-only fallback remainder")
 
-                self._final_complete_text = fallback_text[ctx.active_turn_baseline_len:]
+                self._final_complete_text = self._sanitize_stream_text(
+                    fallback_text[ctx.active_turn_baseline_len:]
+                )
             else:
-                self._final_complete_text = ctx.max_seen_text[ctx.active_turn_baseline_len:] if ctx.max_seen_text else ""
+                self._final_complete_text = self._sanitize_stream_text(
+                    ctx.max_seen_text[ctx.active_turn_baseline_len:] if ctx.max_seen_text else ""
+                )
 
         # 🆕 ===== 最终图片提取 =====
         if self._image_extraction_enabled and (ctx.images_detected or final_snap.get('has_images')):

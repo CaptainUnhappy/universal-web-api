@@ -1,5 +1,6 @@
 (function () {
     const MAIN_PRESET_NAME = '主预设';
+    const REVIEW_TOKEN_STORAGE_KEY = 'marketplace_github_review_token';
 
     function deepClone(value) {
         return JSON.parse(JSON.stringify(value));
@@ -7,6 +8,19 @@
 
     function safeString(value) {
         return String(value || '').trim();
+    }
+
+    function createEmptyReviewSession() {
+        return {
+            connected: false,
+            can_review: false,
+            repo: '',
+            repo_url: '',
+            login: '',
+            role_name: '',
+            permission_label: '',
+            permissions: {}
+        };
     }
 
     Vue.createApp({
@@ -34,6 +48,8 @@
                     submit_help: '',
                     submit_target: '',
                     count: 0,
+                    approved_count: 0,
+                    pending_count: 0,
                     total_downloads: 0,
                     items: []
                 },
@@ -42,8 +58,13 @@
                 showPreviewDialog: false,
                 showImportDialog: false,
                 showSubmitDialog: false,
+                showReviewDialog: false,
                 importStrategy: 'overwrite',
                 importPresetName: '',
+                reviewToken: '',
+                reviewChecking: false,
+                reviewBusyId: '',
+                reviewSession: createEmptyReviewSession(),
                 siteConfigs: {},
                 commandOptions: [],
                 submitForm: {
@@ -147,6 +168,18 @@
                 return safeString(this.catalog.submit_label) || (this.submitIsExternal ? '投稿到公共市场' : '投稿上传');
             },
 
+            reviewEntryLabel() {
+                if (this.reviewSession.can_review) {
+                    return this.reviewSession.login
+                        ? ('审核权限 · ' + this.reviewSession.login)
+                        : '审核权限已连接';
+                }
+                if (this.reviewSession.connected) {
+                    return 'GitHub 审核';
+                }
+                return 'GitHub 审核';
+            },
+
             submitHelpText() {
                 return safeString(this.catalog.submit_help)
                     || (this.submitIsExternal
@@ -173,7 +206,11 @@
 
         mounted() {
             this.loadTheme();
+            this.reviewToken = localStorage.getItem(REVIEW_TOKEN_STORAGE_KEY) || '';
             this.loadCatalog();
+            if (this.reviewToken) {
+                this.loadReviewStatus({ silent: true });
+            }
             window.addEventListener('keydown', this.handleKeydown);
         },
 
@@ -257,6 +294,73 @@
                 window.open(target, '_blank', 'noopener,noreferrer');
             },
 
+            getReviewHeaders() {
+                const token = safeString(this.reviewToken || localStorage.getItem(REVIEW_TOKEN_STORAGE_KEY));
+                return token ? { 'X-GitHub-Token': token } : {};
+            },
+
+            openReviewDialog() {
+                this.reviewToken = safeString(this.reviewToken || localStorage.getItem(REVIEW_TOKEN_STORAGE_KEY));
+                this.showReviewDialog = true;
+            },
+
+            closeReviewDialog() {
+                this.showReviewDialog = false;
+            },
+
+            async saveReviewToken() {
+                const token = safeString(this.reviewToken);
+                if (!token) {
+                    this.notify('请先粘贴 GitHub Token', 'warning');
+                    return;
+                }
+
+                localStorage.setItem(REVIEW_TOKEN_STORAGE_KEY, token);
+                await this.loadReviewStatus();
+            },
+
+            async loadReviewStatus({ silent = false } = {}) {
+                const token = safeString(this.reviewToken || localStorage.getItem(REVIEW_TOKEN_STORAGE_KEY));
+                if (!token) {
+                    this.reviewSession = createEmptyReviewSession();
+                    return;
+                }
+
+                this.reviewChecking = true;
+                try {
+                    const data = await this.apiRequest('/api/marketplace/review/status', {
+                        headers: this.getReviewHeaders()
+                    });
+                    this.reviewSession = {
+                        ...createEmptyReviewSession(),
+                        ...(data || {}),
+                        connected: true
+                    };
+                    this.reviewToken = token;
+                    if (!silent) {
+                        if (this.reviewSession.can_review) {
+                            this.notify('GitHub 审核权限已连接', 'success');
+                        } else {
+                            this.notify('GitHub 已连接，但当前账号没有仓库维护权限', 'warning');
+                        }
+                    }
+                } catch (error) {
+                    this.reviewSession = createEmptyReviewSession();
+                    if (!silent) {
+                        this.notify('GitHub 审核连接失败: ' + error.message, 'error');
+                    }
+                } finally {
+                    this.reviewChecking = false;
+                }
+            },
+
+            clearReviewToken() {
+                localStorage.removeItem(REVIEW_TOKEN_STORAGE_KEY);
+                this.reviewToken = '';
+                this.reviewSession = createEmptyReviewSession();
+                this.notify('已清除本地保存的 GitHub Token', 'success');
+            },
+
             formatNumber(value) {
                 const number = Number(value || 0);
                 return Number.isFinite(number) ? number.toLocaleString('en-US') : '0';
@@ -264,6 +368,27 @@
 
             typeLabel(type) {
                 return type === 'command_bundle' ? '命令系统' : '站点配置';
+            },
+
+            reviewLabel(item) {
+                if (safeString(item && item.review_label)) {
+                    return safeString(item.review_label);
+                }
+                return safeString(item && item.review_status) === 'pending' ? '待审核' : '';
+            },
+
+            isPending(item) {
+                return safeString(item && item.review_status) === 'pending';
+            },
+
+            canImport(item) {
+                return !item || !item.import_disabled;
+            },
+
+            canReviewItem(item) {
+                return this.isPending(item)
+                    && !!this.reviewSession.can_review
+                    && Number(item && item.issue_number) > 0;
             },
 
             compareItems(left, right) {
@@ -300,6 +425,8 @@
                         submit_help: '',
                         submit_target: '',
                         count: 0,
+                        approved_count: 0,
+                        pending_count: 0,
                         total_downloads: 0,
                         items: [],
                         ...(data || {})
@@ -310,6 +437,41 @@
                         : error.message;
                 } finally {
                     this.loading = false;
+                }
+            },
+
+            async reviewItem(item, action) {
+                if (!this.canReviewItem(item)) {
+                    this.notify('当前没有可用的审核权限', 'warning');
+                    return;
+                }
+                if (action === 'approve' && !this.canImport(item)) {
+                    this.notify('这个投稿缺少 JSON，暂时不能直接通过', 'warning');
+                    return;
+                }
+
+                const actionLabel = action === 'approve' ? '通过' : '拒绝';
+                const confirmed = window.confirm(`确认要${actionLabel}这个投稿吗？`);
+                if (!confirmed) {
+                    return;
+                }
+
+                this.reviewBusyId = action + ':' + item.id;
+                try {
+                    const result = await this.apiRequest(
+                        '/api/marketplace/review/issues/' + encodeURIComponent(item.issue_number) + '/' + action,
+                        {
+                            method: 'POST',
+                            headers: this.getReviewHeaders(),
+                            body: JSON.stringify({ note: '' })
+                        }
+                    );
+                    this.notify((result && result.message) || ('已' + actionLabel + '投稿'), 'success');
+                    await this.loadCatalog({ force: true });
+                } catch (error) {
+                    this.notify(actionLabel + '投稿失败: ' + error.message, 'error');
+                } finally {
+                    this.reviewBusyId = '';
                 }
             },
 
@@ -825,43 +987,12 @@
                 await this.copyText(this.submissionPreviewText, '投稿预览已复制');
             },
 
-            buildSubmissionIssueText(payload, responseItem = null) {
-                const item = responseItem || {};
-                const tags = Array.isArray(payload && payload.tags) ? payload.tags.filter(Boolean) : [];
-                const lines = [
-                    '## 基本信息',
-                    `- 类型: ${this.typeLabel(payload.item_type)}`,
-                    `- 标题: ${safeString(payload.title)}`,
-                    `- 作者: ${safeString(payload.author) || '社区贡献'}`,
-                    `- 分类: ${safeString(payload.category) || (payload.item_type === 'site_config' ? safeString(payload.site_domain) : '命令系统')}`,
-                ];
-
-                if (payload.item_type === 'site_config') {
-                    lines.push(`- 站点: ${safeString(payload.site_domain)}`);
-                    lines.push(`- 预设: ${safeString(payload.preset_name) || MAIN_PRESET_NAME}`);
-                }
-                if (safeString(payload.version)) {
-                    lines.push(`- 版本: ${safeString(payload.version)}`);
-                }
-                if (safeString(payload.compatibility)) {
-                    lines.push(`- 兼容: ${safeString(payload.compatibility)}`);
-                }
-                if (tags.length) {
-                    lines.push(`- 标签: ${tags.join(', ')}`);
-                }
-                if (safeString(item.id)) {
-                    lines.push(`- 预览 ID: ${safeString(item.id)}`);
-                }
-
-                lines.push('');
-                lines.push('## 简介');
-                lines.push(safeString(payload.summary) || '请补充简介');
-                lines.push('');
-                lines.push('## JSON 预览');
-                lines.push('```json');
-                lines.push(JSON.stringify(payload, null, 2));
-                lines.push('```');
-                return lines.join('\n');
+            buildSubmissionJsonBlock(payload) {
+                return [
+                    '```json',
+                    JSON.stringify(payload, null, 2),
+                    '```'
+                ].join('\n');
             },
 
             async submitItem() {
@@ -881,12 +1012,12 @@
                     });
 
                     if (result && result.mode === 'external' && safeString(result.submission_url)) {
-                        const copied = await this.tryCopyText(this.buildSubmissionIssueText(payload, result.item));
+                        const copied = await this.tryCopyText(this.buildSubmissionJsonBlock(payload));
                         this.openLink(result.submission_url);
                         this.notify(
                             copied
-                                ? (result.message || '已打开 GitHub 公共投稿页，请直接粘贴已复制的 JSON 预览')
-                                : '已打开 GitHub 公共投稿页，但剪贴板复制失败，请手动复制预览 JSON',
+                                ? (result.message || '已打开 GitHub 公共投稿页，请把已复制的 JSON 代码块粘贴到“预览 JSON”下面')
+                                : '已打开 GitHub 公共投稿页，但剪贴板复制失败，请手动复制 JSON 预览',
                             copied ? 'success' : 'warning'
                         );
                         this.closeSubmitDialog();
@@ -923,6 +1054,10 @@
 
             handleKeydown(event) {
                 if (event.key !== 'Escape') {
+                    return;
+                }
+                if (this.showReviewDialog) {
+                    this.closeReviewDialog();
                     return;
                 }
                 if (this.showSubmitDialog) {

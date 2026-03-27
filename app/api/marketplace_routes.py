@@ -4,7 +4,7 @@ app/api/marketplace_routes.py - 配置市场 API
 
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.api.deps import verify_auth
@@ -29,6 +29,10 @@ class MarketplaceSubmissionRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
     site_config: Optional[Dict[str, Any]] = None
     command_bundle: Optional[Dict[str, Any]] = None
+
+
+class MarketplaceReviewRequest(BaseModel):
+    note: str = Field(default="", max_length=500)
 
 
 @router.get("/api/marketplace")
@@ -71,4 +75,44 @@ async def submit_marketplace_item(
         }
     except Exception as exc:
         logger.error(f"提交市场项目失败: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/api/marketplace/review/status")
+async def get_marketplace_review_status(
+    x_github_token: Optional[str] = Header(None),
+    authenticated: bool = Depends(verify_auth),
+):
+    try:
+        return marketplace_service.get_review_status(x_github_token or "")
+    except Exception as exc:
+        logger.error(f"获取市场审核权限失败: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/marketplace/review/issues/{issue_number}/approve")
+async def approve_marketplace_issue(
+    issue_number: int,
+    body: MarketplaceReviewRequest,
+    x_github_token: Optional[str] = Header(None),
+    authenticated: bool = Depends(verify_auth),
+):
+    try:
+        return marketplace_service.approve_pending_issue(issue_number, x_github_token or "")
+    except Exception as exc:
+        logger.error(f"审核通过市场投稿失败: issue={issue_number}, error={exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/marketplace/review/issues/{issue_number}/reject")
+async def reject_marketplace_issue(
+    issue_number: int,
+    body: MarketplaceReviewRequest,
+    x_github_token: Optional[str] = Header(None),
+    authenticated: bool = Depends(verify_auth),
+):
+    try:
+        return marketplace_service.reject_pending_issue(issue_number, x_github_token or "")
+    except Exception as exc:
+        logger.error(f"拒绝市场投稿失败: issue={issue_number}, error={exc}")
         raise HTTPException(status_code=400, detail=str(exc))

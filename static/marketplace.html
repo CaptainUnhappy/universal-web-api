@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>插件市场</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/static/css/marketplace.css?v=2.7.0">
+    <link rel="stylesheet" href="/static/css/marketplace.css?v=2.7.0&marketplace_layout=20260327g">
 </head>
 <body>
     <div id="marketplace-app" v-cloak class="mp-page">
@@ -18,6 +18,9 @@
                 </div>
             </div>
             <div class="mp-topbar__actions">
+                <button type="button" class="mp-button mp-button--ghost" @click="openReviewDialog">
+                    {{ reviewEntryLabel }}
+                </button>
                 <button type="button" class="mp-button mp-button--ghost" @click="toggleDarkMode">
                     {{ darkMode ? '浅色模式' : '深色模式' }}
                 </button>
@@ -32,18 +35,7 @@
                         全部插件
                         <span>({{ filteredItems.length }})</span>
                     </div>
-                    <div class="mp-inline-meta">
-                        <span>{{ catalog.source_name || '本地插件市场' }}</span>
-                        <span>{{ catalog.count || 0 }} 项</span>
-                        <span>累计下载 {{ formatNumber(catalog.total_downloads || 0) }}</span>
-                        <span>默认按下载量</span>
-                    </div>
-                    <div class="mp-inline-links" v-if="catalog.source_url || catalog.repo_url || (submitIsExternal && catalog.upload_url)">
-                        <span class="mp-source-pill">{{ sourceBadgeLabel }}</span>
-                        <button v-if="catalog.source_url" type="button" class="mp-inline-link" @click="openLink(catalog.source_url)">查看目录 JSON</button>
-                        <button v-if="catalog.repo_url" type="button" class="mp-inline-link" @click="openLink(catalog.repo_url)">查看 GitHub 仓库</button>
-                        <button v-if="submitIsExternal && catalog.upload_url" type="button" class="mp-inline-link" @click="openLink(catalog.upload_url)">打开公共投稿页</button>
-                    </div>
+                    <p class="mp-toolbar__subtitle">收录站点配置和命令系统，支持预览、导入和公共投稿。</p>
                 </div>
                 <div class="mp-toolbar__actions">
                     <button type="button" class="mp-button mp-button--ghost" @click="loadCatalog({ force: true })">刷新</button>
@@ -81,6 +73,12 @@
             </div>
 
             <div v-if="submitHelpText" class="mp-banner mp-banner--info">{{ submitHelpText }}</div>
+            <div v-if="reviewSession.connected" class="mp-banner mp-banner--success">
+                GitHub 审核已连接
+                <template v-if="reviewSession.login"> · {{ reviewSession.login }}</template>
+                <template v-if="reviewSession.permission_label"> · {{ reviewSession.permission_label }}</template>
+                <template v-if="!reviewSession.can_review"> · 当前 token 没有仓库维护权限，无法执行通过/拒绝</template>
+            </div>
             <div v-if="catalog.warning" class="mp-banner mp-banner--warning">{{ catalog.warning }}</div>
             <div v-if="error" class="mp-banner mp-banner--error">{{ error }}</div>
         </section>
@@ -101,6 +99,7 @@
                     <div class="mp-list-item__main">
                         <div class="mp-list-item__badges">
                             <span class="mp-badge">{{ typeLabel(item.item_type) }}</span>
+                            <span v-if="reviewLabel(item)" class="mp-badge mp-badge--pending">{{ reviewLabel(item) }}</span>
                             <span v-if="item.site_domain" class="mp-badge mp-badge--muted">{{ item.site_domain }}</span>
                             <span v-else-if="item.category" class="mp-badge mp-badge--muted">{{ item.category }}</span>
                         </div>
@@ -111,6 +110,7 @@
                             <span v-if="item.version">版本 {{ item.version }}</span>
                             <span v-if="item.compatibility">兼容 {{ item.compatibility }}</span>
                             <span v-if="item.updated_at">更新 {{ item.updated_at }}</span>
+                            <button v-if="item.issue_url" type="button" class="mp-inline-link" @click="openLink(item.issue_url)">查看投稿</button>
                         </div>
                         <div v-if="Array.isArray(item.tags) && item.tags.length" class="mp-tags">
                             <span v-for="tag in item.tags" :key="item.id + '-' + tag" class="mp-tag">{{ tag }}</span>
@@ -131,18 +131,92 @@
                         <div class="mp-actions">
                             <button type="button" class="mp-button mp-button--ghost" @click="previewItem(item)">预览</button>
                             <button
+                                v-if="canReviewItem(item)"
+                                type="button"
+                                class="mp-button mp-button--success"
+                                :disabled="reviewBusyId === ('approve:' + item.id) || !canImport(item)"
+                                @click="reviewItem(item, 'approve')"
+                            >
+                                {{ reviewBusyId === ('approve:' + item.id) ? '通过中...' : (canImport(item) ? '通过' : '缺少 JSON') }}
+                            </button>
+                            <button
+                                v-if="canReviewItem(item)"
+                                type="button"
+                                class="mp-button mp-button--danger"
+                                :disabled="reviewBusyId === ('reject:' + item.id)"
+                                @click="reviewItem(item, 'reject')"
+                            >
+                                {{ reviewBusyId === ('reject:' + item.id) ? '拒绝中...' : '拒绝' }}
+                            </button>
+                            <button
+                                v-if="item.issue_url && !canImport(item)"
+                                type="button"
+                                class="mp-button mp-button--ghost"
+                                @click="openLink(item.issue_url)"
+                            >
+                                去补充
+                            </button>
+                            <button
                                 type="button"
                                 class="mp-button mp-button--primary"
-                                :disabled="busyId === item.id"
+                                :disabled="busyId === item.id || !canImport(item)"
                                 @click="startImport(item)"
                             >
-                                {{ busyId === item.id ? '处理中...' : (item.item_type === 'command_bundle' ? '导入命令' : '导入配置') }}
+                                {{ !canImport(item) ? '缺少 JSON' : (busyId === item.id ? '处理中...' : (item.item_type === 'command_bundle' ? '导入命令' : '导入配置')) }}
                             </button>
                         </div>
                     </div>
                 </article>
             </div>
         </section>
+
+        <footer class="mp-page-footer">
+            <div class="mp-toolbar__footer mp-toolbar__footer--page">
+                <div class="mp-inline-links" v-if="catalog.repo_url || (submitIsExternal && catalog.upload_url)">
+                    <button v-if="catalog.repo_url" type="button" class="mp-inline-link" @click="openLink(catalog.repo_url)">查看 GitHub 仓库</button>
+                    <button v-if="submitIsExternal && catalog.upload_url" type="button" class="mp-inline-link" @click="openLink(catalog.upload_url)">打开公共投稿页</button>
+                </div>
+            </div>
+        </footer>
+
+        <div v-if="showReviewDialog" class="mp-modal" @click.self="closeReviewDialog">
+            <div class="mp-modal__card">
+                <div class="mp-modal__header">
+                    <div>
+                        <h3>GitHub 审核</h3>
+                        <p>只有对公共市场仓库拥有维护权限的 GitHub 账号，才会显示投稿的“通过 / 拒绝”按钮。</p>
+                    </div>
+                    <button type="button" class="mp-button mp-button--ghost" @click="closeReviewDialog">关闭</button>
+                </div>
+                <div class="mp-banner mp-banner--info mp-banner--compact">
+                    这里填写的 GitHub Token 只保存在当前浏览器本地，不会写入项目仓库，也不会发给其他用户。
+                </div>
+                <label class="mp-field mp-field--full">
+                    <span>GitHub Token</span>
+                    <input
+                        v-model.trim="reviewToken"
+                        type="password"
+                        class="mp-control"
+                        placeholder="粘贴拥有仓库维护权限的 GitHub token"
+                    >
+                </label>
+                <p class="mp-inline-tip">建议使用对当前公共仓库具备 `Contents` 与 `Issues` 写权限的 token。</p>
+                <div v-if="reviewSession.connected" class="mp-review-status">
+                    <span class="mp-badge mp-badge--muted">仓库 {{ reviewSession.repo || '未配置' }}</span>
+                    <span class="mp-badge" :class="reviewSession.can_review ? 'mp-badge--success' : 'mp-badge--muted'">
+                        {{ reviewSession.can_review ? '已获得审核权限' : '仅连接成功，暂无审核权限' }}
+                    </span>
+                    <span v-if="reviewSession.login" class="mp-badge mp-badge--muted">账号 {{ reviewSession.login }}</span>
+                    <span v-if="reviewSession.permission_label" class="mp-badge mp-badge--muted">角色 {{ reviewSession.permission_label }}</span>
+                </div>
+                <div class="mp-modal__footer">
+                    <button type="button" class="mp-button mp-button--ghost" @click="clearReviewToken">清除</button>
+                    <button type="button" class="mp-button mp-button--primary" :disabled="reviewChecking" @click="saveReviewToken">
+                        {{ reviewChecking ? '验证中...' : '验证权限' }}
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <div v-if="showPreviewDialog" class="mp-modal" @click.self="closePreviewDialog">
             <div class="mp-modal__card mp-modal__card--wide">
@@ -155,14 +229,17 @@
                 </div>
                 <div class="mp-modal__meta" v-if="previewDetail">
                     <span>{{ typeLabel(previewDetail.item_type) }}</span>
+                    <span v-if="reviewLabel(previewDetail)">{{ reviewLabel(previewDetail) }}</span>
                     <span v-if="previewDetail.site_domain">{{ previewDetail.site_domain }}</span>
                     <span>下载 {{ formatNumber(previewDetail.downloads || 0) }}</span>
                     <span v-if="previewDetail.updated_at">更新 {{ previewDetail.updated_at }}</span>
+                    <button v-if="previewDetail.issue_url" type="button" class="mp-inline-link" @click="openLink(previewDetail.issue_url)">查看 GitHub 投稿</button>
                 </div>
                 <pre class="mp-json-preview">{{ previewJsonText }}</pre>
                 <div class="mp-modal__footer">
                     <button type="button" class="mp-button mp-button--ghost" @click="copyPreviewJson">复制 JSON</button>
-                    <button type="button" class="mp-button mp-button--primary" @click="startImportFromPreview">导入这个项目</button>
+                    <button v-if="previewDetail?.issue_url && previewDetail?.import_disabled" type="button" class="mp-button mp-button--ghost" @click="openLink(previewDetail.issue_url)">去补充 JSON</button>
+                    <button v-if="!previewDetail?.import_disabled" type="button" class="mp-button mp-button--primary" @click="startImportFromPreview">导入这个项目</button>
                 </div>
             </div>
         </div>

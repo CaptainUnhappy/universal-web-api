@@ -436,7 +436,7 @@
           "message_wrapper": null,
           "generating_indicator": "",
           "点击模型选择": "[data-test-id=\"logo-pill-label-container\"]",
-          "选择模型": ".mat-mdc-menu-item:nth-of-type(2)",
+          "选择模型": "//button[.//span[contains(text(), \"思考\")]]",
           "临时对话按钮": "button.temp-chat-button"
         },
         "stream_config": {

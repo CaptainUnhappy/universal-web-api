@@ -4,14 +4,16 @@ app/services/marketplace_service.py - 配置市场服务
 
 from __future__ import annotations
 
+import base64
 import copy
+import html
 import json
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit, quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -27,6 +29,9 @@ class MarketplaceService:
     DEFAULT_AUTHOR = "社区贡献"
     DEFAULT_SITE_CATEGORY = "站点配置"
     DEFAULT_COMMAND_CATEGORY = "命令系统"
+    ISSUE_MARKER = "<!-- marketplace-submission -->"
+    ISSUE_TITLE_PREFIX = "[市场投稿]"
+    ISSUE_ID_PREFIX = "pending-issue-"
 
     def __init__(self):
         self._cached_manifest: Optional[Dict[str, Any]] = None
@@ -36,6 +41,7 @@ class MarketplaceService:
         manifest = self._load_manifest(force_refresh=force_refresh)
         items = [self._to_list_item(item) for item in manifest.get("items", [])]
         items.sort(key=lambda item: (-int(item.get("downloads", 0) or 0), str(item.get("name") or "")))
+        pending_count = sum(1 for item in items if str(item.get("review_status") or "") == "pending")
 
         return {
             "source_mode": manifest.get("source_mode", "local"),
@@ -50,6 +56,8 @@ class MarketplaceService:
             "submit_target": manifest.get("submit_target", ""),
             "default_sort": "downloads",
             "count": len(items),
+            "approved_count": max(0, len(items) - pending_count),
+            "pending_count": pending_count,
             "total_downloads": sum(int(item.get("downloads", 0) or 0) for item in items),
             "items": items,
         }
@@ -66,6 +74,9 @@ class MarketplaceService:
         )
         if not item:
             raise KeyError(f"未找到市场项目: {normalized_id}")
+
+        if item.get("import_disabled"):
+            return item
 
         item_type = item.get("item_type", self.DEFAULT_TYPE)
         if item_type == "command_bundle":
@@ -118,11 +129,17 @@ class MarketplaceService:
         upload_url = AppConfig.get_marketplace_upload_url()
         submit_mode = AppConfig.get_marketplace_submit_mode()
         local_overlay_enabled = AppConfig.is_marketplace_local_overlay_enabled()
-        warning = ""
+        try:
+            remote_cache_manifest = self._load_remote_cache_manifest() if remote_url else None
+        except Exception as exc:
+            remote_cache_manifest = None
+            logger.warning(f"[marketplace] 本地公共缓存读取失败: {exc}")
+        warning_messages: List[str] = []
+        pending_items: List[Dict[str, Any]] = []
 
         if remote_url:
             try:
-                remote_manifest = self._normalize_manifest(self._fetch_json(remote_url))
+                remote_manifest = self._load_remote_manifest(remote_url)
                 if local_overlay_enabled and local_manifest.get("items"):
                     manifest = self._merge_manifests(remote_manifest, local_manifest)
                     manifest["source_mode"] = "hybrid"
@@ -132,32 +149,113 @@ class MarketplaceService:
                 manifest.setdefault("source_name", remote_manifest.get("source_name") or "GitHub 配置市场")
                 manifest.setdefault("source_url", remote_url)
             except Exception as exc:
-                warning = f"GitHub 索引读取失败，已回退到本地市场: {exc}"
                 logger.warning(f"[marketplace] 远程索引加载失败: {exc}")
-                manifest = local_manifest
-                manifest["source_mode"] = "local"
+                if remote_cache_manifest:
+                    manifest = copy.deepcopy(remote_cache_manifest)
+                    manifest["source_mode"] = "cache"
+                    cached_at = str(remote_cache_manifest.get("cached_at") or "").strip()
+                    if cached_at:
+                        warning_messages.append(f"GitHub 索引读取失败，已改用本地缓存（缓存时间 {cached_at}）: {exc}")
+                    else:
+                        warning_messages.append(f"GitHub 索引读取失败，已改用本地缓存: {exc}")
+                else:
+                    warning_messages.append(f"GitHub 索引读取失败，已回退到本地市场: {exc}")
+                    manifest = local_manifest
+                    manifest["source_mode"] = "local"
         else:
             manifest = local_manifest
             manifest["source_mode"] = "local"
+
+        if AppConfig.is_marketplace_pending_enabled() and manifest.get("source_mode") != "cache":
+            try:
+                pending_items = self._fetch_pending_issue_items()
+            except Exception as exc:
+                logger.warning(f"[marketplace] 待审核投稿加载失败: {exc}")
+                cached_pending_items = self._extract_cached_pending_items(remote_cache_manifest)
+                if cached_pending_items:
+                    pending_items = cached_pending_items
+                    cached_at = str((remote_cache_manifest or {}).get("cached_at") or "").strip()
+                    if cached_at:
+                        warning_messages.append(f"GitHub 待审核投稿读取失败，已使用本地缓存（缓存时间 {cached_at}）: {exc}")
+                    else:
+                        warning_messages.append(f"GitHub 待审核投稿读取失败，已使用本地缓存: {exc}")
+                else:
+                    warning_messages.append(f"GitHub 待审核投稿读取失败: {exc}")
+
+        if pending_items:
+            pending_items = self._filter_pending_items_against_manifest(
+                manifest.get("items", []),
+                pending_items,
+            )
+            manifest["items"] = self._merge_item_lists(manifest.get("items", []), pending_items)
 
         default_source_name = "公共插件市场" if remote_url else "本地配置市场"
         manifest.setdefault("source_name", default_source_name)
         manifest.setdefault("source_url", remote_url if remote_url else "")
         manifest.setdefault("repo_url", repo_url)
         manifest.setdefault("upload_url", upload_url)
-        manifest["warning"] = warning or str(manifest.get("warning") or "")
+        manifest["warning"] = "；".join(
+            part for part in [str(manifest.get("warning") or ""), *warning_messages] if part
+        )
         manifest["submit_mode"] = submit_mode
         manifest["submit_label"] = "投稿到公共市场" if submit_mode != "local" and upload_url else "投稿上传"
         manifest["submit_help"] = (
-            "投稿会打开 GitHub 公共页面，完整预览 JSON 会先复制到剪贴板，打开后直接粘贴即可。"
+            "投稿会打开 GitHub 公共页面，页面会自动填好基本信息；提交时复制到剪贴板的只有 JSON 代码块，打开后粘贴到“预览 JSON”下面即可。已提交但未收录的内容会以“待审核”状态显示在列表里。"
             if submit_mode != "local" and upload_url
             else "投稿会直接写入当前实例的本地市场清单。"
         )
         manifest["submit_target"] = "GitHub 公共投稿" if submit_mode != "local" and upload_url else "本地市场"
 
+        if remote_url and manifest.get("source_mode") in {"remote", "hybrid"}:
+            try:
+                self._save_remote_cache_manifest(manifest)
+            except Exception as exc:
+                logger.warning(f"[marketplace] 本地公共缓存写入失败: {exc}")
+
         self._cached_manifest = copy.deepcopy(manifest)
         self._cached_at = now_ts
         return copy.deepcopy(manifest)
+
+    def _load_remote_cache_manifest(self) -> Optional[Dict[str, Any]]:
+        path = Path(AppConfig.get_marketplace_cache_file())
+        if not path.exists():
+            return None
+
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+        manifest = self._normalize_manifest(data)
+        manifest.setdefault("source_name", "公共插件市场")
+        manifest.setdefault("source_url", AppConfig.get_marketplace_index_url())
+        manifest.setdefault("repo_url", AppConfig.get_marketplace_repo_url())
+        manifest.setdefault("upload_url", AppConfig.get_marketplace_upload_url())
+        manifest["cached_at"] = str(data.get("cached_at") or "")
+        return manifest
+
+    def _save_remote_cache_manifest(self, manifest: Dict[str, Any]) -> None:
+        path = Path(AppConfig.get_marketplace_cache_file())
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "source_name": manifest.get("source_name") or "公共插件市场",
+            "source_url": manifest.get("source_url") or AppConfig.get_marketplace_index_url(),
+            "repo_url": manifest.get("repo_url") or AppConfig.get_marketplace_repo_url(),
+            "upload_url": manifest.get("upload_url") or AppConfig.get_marketplace_upload_url(),
+            "cached_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "items": copy.deepcopy(manifest.get("items", [])),
+        }
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def _extract_cached_pending_items(self, manifest: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(manifest, dict):
+            return []
+        items = []
+        for item in manifest.get("items", []):
+            if str((item or {}).get("review_status") or "") != "pending":
+                continue
+            items.append(copy.deepcopy(item))
+        return items
 
     def _load_local_manifest(self) -> Dict[str, Any]:
         path = Path(AppConfig.get_marketplace_file())
@@ -180,47 +278,164 @@ class MarketplaceService:
         return manifest
 
     def _merge_manifests(self, remote_manifest: Dict[str, Any], local_manifest: Dict[str, Any]) -> Dict[str, Any]:
-        merged_items: List[Dict[str, Any]] = []
-        seen_ids = set()
-        for source in (local_manifest.get("items", []), remote_manifest.get("items", [])):
-            for item in source:
-                item_id = str(item.get("id") or "").strip()
-                if not item_id or item_id in seen_ids:
-                    continue
-                seen_ids.add(item_id)
-                merged_items.append(copy.deepcopy(item))
-
         return {
             "source_name": remote_manifest.get("source_name") or local_manifest.get("source_name") or "配置市场",
             "source_url": remote_manifest.get("source_url") or local_manifest.get("source_url") or "",
             "repo_url": remote_manifest.get("repo_url") or local_manifest.get("repo_url") or "",
             "upload_url": local_manifest.get("upload_url") or remote_manifest.get("upload_url") or "",
             "warning": local_manifest.get("warning") or remote_manifest.get("warning") or "",
-            "items": merged_items,
+            "items": self._merge_item_lists(local_manifest.get("items", []), remote_manifest.get("items", [])),
         }
 
-    def _fetch_json(self, url: str) -> Dict[str, Any]:
-        request = Request(
-            str(url or "").strip(),
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Universal-Web-to-API-Marketplace/1.0",
-            },
-        )
-        timeout = max(1.0, float(AppConfig.get_marketplace_timeout()))
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                charset = response.headers.get_content_charset() or "utf-8"
-                text = response.read().decode(charset)
-        except HTTPError as exc:
-            raise RuntimeError(f"HTTP {exc.code}") from exc
-        except URLError as exc:
-            raise RuntimeError(str(getattr(exc, "reason", exc))) from exc
+    def _merge_item_lists(self, *sources: Any) -> List[Dict[str, Any]]:
+        merged_items: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for source in sources:
+            for item in source or []:
+                item_id = str(item.get("id") or "").strip()
+                if not item_id or item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                merged_items.append(copy.deepcopy(item))
+        return merged_items
 
-        payload = json.loads(text)
+    def _fetch_json(self, url: str) -> Dict[str, Any]:
+        payload = self._fetch_json_payload(url)
         if not isinstance(payload, dict):
             raise ValueError("市场索引必须是 JSON 对象")
         return payload
+
+    def _load_remote_manifest(self, remote_url: str) -> Dict[str, Any]:
+        try:
+            return self._normalize_manifest(self._fetch_json(remote_url))
+        except Exception as raw_exc:
+            if self._can_use_repo_index_api_fallback(remote_url):
+                try:
+                    manifest, _ = self._load_remote_manifest_from_repo_api()
+                    logger.warning(f"[marketplace] raw GitHub 索引读取失败，已自动切换到 Contents API: {raw_exc}")
+                    return manifest
+                except Exception as api_exc:
+                    raise RuntimeError(
+                        f"{raw_exc}；GitHub Contents API 兜底也失败: {api_exc}"
+                    ) from api_exc
+            raise
+
+    def _can_use_repo_index_api_fallback(self, remote_url: str) -> bool:
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        branch = AppConfig.get_marketplace_branch()
+        index_path = AppConfig.get_marketplace_index_path().lstrip("/")
+        parsed = urlsplit(str(remote_url or "").strip())
+        if not repo or "/" not in repo:
+            return False
+        if parsed.scheme != "https" or parsed.netloc.lower() != "raw.githubusercontent.com":
+            return False
+        expected_path = f"/{repo}/{branch}/{index_path}"
+        return parsed.path == expected_path
+
+    def _build_request_headers(self, url: str, accept: str, github_token: str = "") -> Dict[str, str]:
+        headers = {
+            "Accept": accept,
+            "User-Agent": "Universal-Web-to-API-Marketplace/1.0",
+        }
+        token = str(github_token or "").strip() or str(AppConfig.get_marketplace_github_token() or "").strip()
+        host = urlsplit(str(url or "")).netloc.lower()
+        if token and host == "api.github.com":
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _is_transient_fetch_error(self, exc: Exception) -> bool:
+        message = str(getattr(exc, "reason", exc) or "").lower()
+        if isinstance(exc, HTTPError):
+            return int(getattr(exc, "code", 0) or 0) in {429, 500, 502, 503, 504}
+        return any(
+            hint in message
+            for hint in (
+                "unexpected eof while reading",
+                "eof occurred in violation of protocol",
+                "connection reset",
+                "connection aborted",
+                "timed out",
+                "timeout",
+                "temporarily unavailable",
+                "tlsv1",
+                "ssl",
+            )
+        )
+
+    def _fetch_text_payload(
+        self,
+        url: str,
+        accept: str = "text/html",
+        github_token: str = "",
+        method: str = "GET",
+        payload: Optional[Any] = None,
+    ) -> str:
+        method_name = str(method or "GET").upper()
+        timeout = max(1.0, float(AppConfig.get_marketplace_timeout()))
+        attempts = 2 if method_name == "GET" else 1
+
+        for attempt in range(1, attempts + 1):
+            request_body = None
+            headers = self._build_request_headers(url, accept=accept, github_token=github_token)
+            if payload is not None:
+                request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                headers["Content-Type"] = "application/json; charset=utf-8"
+            request = Request(
+                str(url or "").strip(),
+                data=request_body,
+                headers=headers,
+                method=method_name,
+            )
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    charset = response.headers.get_content_charset() or "utf-8"
+                    return response.read().decode(charset)
+            except HTTPError as exc:
+                if attempt < attempts and self._is_transient_fetch_error(exc):
+                    time.sleep(0.35 * attempt)
+                    continue
+                detail = ""
+                try:
+                    charset = exc.headers.get_content_charset() or "utf-8"
+                    body_text = exc.read().decode(charset)
+                    if body_text:
+                        parsed = json.loads(body_text)
+                        if isinstance(parsed, dict):
+                            detail = str(parsed.get("message") or parsed.get("error_description") or "").strip()
+                except Exception:
+                    detail = ""
+                if detail:
+                    raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+                raise RuntimeError(f"HTTP {exc.code}") from exc
+            except URLError as exc:
+                if attempt < attempts and self._is_transient_fetch_error(exc):
+                    time.sleep(0.35 * attempt)
+                    continue
+                raise RuntimeError(str(getattr(exc, "reason", exc))) from exc
+            except Exception as exc:
+                if attempt < attempts and self._is_transient_fetch_error(exc):
+                    time.sleep(0.35 * attempt)
+                    continue
+                raise RuntimeError(str(exc)) from exc
+
+        raise RuntimeError("远程请求失败")
+
+    def _fetch_json_payload(
+        self,
+        url: str,
+        github_token: str = "",
+        method: str = "GET",
+        payload: Optional[Any] = None,
+    ) -> Any:
+        text = self._fetch_text_payload(
+            url,
+            accept="application/vnd.github+json, application/json",
+            github_token=github_token,
+            method=method,
+            payload=payload,
+        )
+
+        return json.loads(text)
 
     def _normalize_manifest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(payload, dict):
@@ -239,6 +454,527 @@ class MarketplaceService:
             "upload_url": str(payload.get("upload_url") or ""),
             "warning": str(payload.get("warning") or ""),
             "items": items,
+        }
+
+    def get_review_status(self, github_token: str) -> Dict[str, Any]:
+        context = self._resolve_review_context(github_token)
+        return {
+            "connected": True,
+            "can_review": bool(context.get("can_review")),
+            "repo": context.get("repo", ""),
+            "repo_url": context.get("repo_url", ""),
+            "login": context.get("login", ""),
+            "role_name": context.get("role_name", ""),
+            "permission_label": context.get("permission_label", ""),
+            "permissions": copy.deepcopy(context.get("permissions") or {}),
+        }
+
+    def approve_pending_issue(self, issue_number: int, github_token: str) -> Dict[str, Any]:
+        context = self._resolve_review_context(github_token, require_review=True)
+        issue_payload = self._fetch_github_issue(issue_number, github_token)
+        if not self._is_marketplace_issue(issue_payload):
+            raise ValueError(f"GitHub issue #{issue_number} 不是待审核投稿")
+        approved_item = self._build_approved_item_from_issue(issue_payload)
+
+        manifest, manifest_sha = self._load_remote_manifest_for_review(github_token)
+        existing_items = list(manifest.get("items", []))
+        existing_item = next(
+            (
+                entry for entry in existing_items
+                if str((entry or {}).get("id") or "").strip() == str(approved_item.get("id") or "").strip()
+            ),
+            None,
+        )
+        if isinstance(existing_item, dict):
+            approved_item["downloads"] = self._coerce_int(existing_item.get("downloads"))
+            approved_item["stars"] = self._coerce_int(existing_item.get("stars"))
+
+        manifest["items"] = [
+            entry for entry in existing_items
+            if str((entry or {}).get("id") or "").strip() != str(approved_item.get("id") or "").strip()
+        ]
+        manifest["items"].insert(0, approved_item)
+        manifest.setdefault("repo_url", context.get("repo_url") or AppConfig.get_marketplace_repo_url())
+        manifest.setdefault("source_url", AppConfig.get_marketplace_index_url())
+        manifest.setdefault("upload_url", AppConfig.get_marketplace_upload_url())
+
+        self._save_remote_manifest_for_review(
+            manifest,
+            manifest_sha,
+            github_token,
+            message=f"Approve marketplace submission from issue #{issue_number}",
+        )
+        self._close_github_issue(issue_number, github_token)
+
+        self._cached_manifest = None
+        self._cached_at = 0.0
+        try:
+            self._save_remote_cache_manifest(manifest)
+        except Exception as exc:
+            logger.warning(f"[marketplace] 审核通过后写入本地缓存失败: {exc}")
+
+        return {
+            "success": True,
+            "action": "approve",
+            "issue_number": int(issue_number),
+            "item": self._to_list_item(approved_item),
+            "message": f"已通过并收录投稿 #{issue_number}",
+        }
+
+    def reject_pending_issue(self, issue_number: int, github_token: str) -> Dict[str, Any]:
+        self._resolve_review_context(github_token, require_review=True)
+        issue_payload = self._fetch_github_issue(issue_number, github_token)
+        if not self._is_marketplace_issue(issue_payload):
+            raise ValueError(f"GitHub issue #{issue_number} 不是待审核投稿")
+
+        self._close_github_issue(issue_number, github_token)
+        self._cached_manifest = None
+        self._cached_at = 0.0
+
+        return {
+            "success": True,
+            "action": "reject",
+            "issue_number": int(issue_number),
+            "message": f"已拒绝并关闭投稿 #{issue_number}",
+        }
+
+    def _resolve_review_context(self, github_token: str, require_review: bool = False) -> Dict[str, Any]:
+        token = str(github_token or "").strip()
+        if not token:
+            raise ValueError("请先提供 GitHub Token")
+
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        if not repo or "/" not in repo:
+            raise ValueError("当前未配置公共市场 GitHub 仓库")
+
+        repo_payload = self._fetch_json_payload(f"https://api.github.com/repos/{repo}", github_token=token)
+        if not isinstance(repo_payload, dict):
+            raise ValueError("GitHub 仓库信息读取失败")
+
+        permissions = repo_payload.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = {}
+        normalized_permissions = {
+            "admin": bool(permissions.get("admin")),
+            "maintain": bool(permissions.get("maintain")),
+            "push": bool(permissions.get("push")),
+            "triage": bool(permissions.get("triage")),
+            "pull": bool(permissions.get("pull")),
+        }
+        role_name = str(repo_payload.get("role_name") or "").strip().lower()
+        can_review = bool(
+            normalized_permissions.get("admin")
+            or normalized_permissions.get("maintain")
+            or normalized_permissions.get("push")
+            or role_name in {"admin", "maintain", "write"}
+        )
+        permission_label = self._format_review_permission_label(normalized_permissions, role_name)
+
+        login = ""
+        try:
+            user_payload = self._fetch_json_payload("https://api.github.com/user", github_token=token)
+            if isinstance(user_payload, dict):
+                login = str(user_payload.get("login") or "").strip()
+        except Exception:
+            login = ""
+
+        context = {
+            "repo": repo,
+            "repo_url": AppConfig.get_marketplace_repo_url(),
+            "branch": AppConfig.get_marketplace_branch(),
+            "index_path": AppConfig.get_marketplace_index_path(),
+            "permissions": normalized_permissions,
+            "role_name": role_name,
+            "permission_label": permission_label,
+            "can_review": can_review,
+            "login": login,
+        }
+        if require_review and not can_review:
+            raise ValueError("当前 GitHub 账号没有这个仓库的维护权限，无法审核投稿")
+        return context
+
+    def _format_review_permission_label(self, permissions: Dict[str, bool], role_name: str) -> str:
+        if permissions.get("admin") or role_name == "admin":
+            return "管理员"
+        if permissions.get("maintain") or role_name == "maintain":
+            return "维护者"
+        if permissions.get("push") or role_name == "write":
+            return "可写成员"
+        if permissions.get("triage") or role_name == "triage":
+            return "分诊成员"
+        if permissions.get("pull") or role_name == "read":
+            return "只读成员"
+        return "未知权限"
+
+    def _fetch_github_issue(self, issue_number: int, github_token: str) -> Dict[str, Any]:
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        if not repo or "/" not in repo:
+            raise ValueError("当前未配置公共市场 GitHub 仓库")
+
+        payload = self._fetch_json_payload(
+            f"https://api.github.com/repos/{repo}/issues/{int(issue_number)}",
+            github_token=github_token,
+        )
+        if not isinstance(payload, dict):
+            raise ValueError(f"GitHub issue #{issue_number} 读取失败")
+        return payload
+
+    def _build_approved_item_from_issue(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+        item_payload, json_payload = self._extract_issue_item_payload(issue)
+        if not isinstance(item_payload, dict):
+            raise ValueError("待审核投稿内容无法解析")
+        if json_payload is None:
+            raise ValueError("该投稿缺少可导入的 JSON 内容，暂时不能直接收录")
+
+        issue_number = self._coerce_int(issue.get("number"))
+        issue_title = str(issue.get("title") or "").strip()
+        issue_url = str(issue.get("html_url") or "").strip()
+        item_payload["downloads"] = self._coerce_int(item_payload.get("downloads"))
+        item_payload["stars"] = self._coerce_int(item_payload.get("stars"))
+        item_payload["updated_at"] = str(issue.get("updated_at") or issue.get("created_at") or "")
+        item_payload["repo_url"] = issue_url
+
+        normalized = self._normalize_item(item_payload)
+        if not normalized:
+            raise ValueError("待审核投稿规范化失败")
+
+        normalized["review_status"] = ""
+        normalized["review_label"] = ""
+        normalized["issue_number"] = issue_number
+        normalized["issue_url"] = issue_url
+        normalized["issue_title"] = issue_title
+        normalized["import_disabled"] = False
+        return normalized
+
+    def _extract_issue_item_payload(self, issue: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        issue_title = str(issue.get("title") or "").strip()
+        issue_body = str(issue.get("body") or "")
+        json_payload = self._extract_issue_json_payload(issue_body)
+        if isinstance(json_payload, dict):
+            return copy.deepcopy(json_payload), json_payload
+        metadata_payload = self._extract_issue_metadata_payload(issue_title, issue_body)
+        return metadata_payload if isinstance(metadata_payload, dict) else None, None
+
+    def _filter_pending_items_against_manifest(
+        self,
+        manifest_items: List[Dict[str, Any]],
+        pending_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        seen_issue_numbers = {
+            self._coerce_int((item or {}).get("issue_number"))
+            for item in (manifest_items or [])
+            if self._coerce_int((item or {}).get("issue_number")) > 0
+        }
+        filtered: List[Dict[str, Any]] = []
+        for item in pending_items or []:
+            issue_number = self._coerce_int((item or {}).get("issue_number"))
+            if issue_number > 0 and issue_number in seen_issue_numbers:
+                continue
+            filtered.append(copy.deepcopy(item))
+        return filtered
+
+    def _load_remote_manifest_for_review(self, github_token: str) -> tuple[Dict[str, Any], str]:
+        return self._load_remote_manifest_from_repo_api(github_token=github_token)
+
+    def _load_remote_manifest_from_repo_api(self, github_token: str = "") -> tuple[Dict[str, Any], str]:
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        branch = AppConfig.get_marketplace_branch()
+        index_path = AppConfig.get_marketplace_index_path()
+        if not repo or "/" not in repo:
+            raise ValueError("当前未配置公共市场 GitHub 仓库")
+
+        payload = self._fetch_json_payload(
+            f"https://api.github.com/repos/{repo}/contents/{quote(index_path)}?ref={quote(branch)}",
+            github_token=github_token,
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("公共市场索引文件读取失败")
+
+        content_text = self._decode_github_file_content(payload)
+        manifest = self._normalize_manifest(json.loads(content_text))
+        manifest.setdefault("source_name", "公共插件市场")
+        manifest.setdefault("source_url", AppConfig.get_marketplace_index_url())
+        manifest.setdefault("repo_url", AppConfig.get_marketplace_repo_url())
+        manifest.setdefault("upload_url", AppConfig.get_marketplace_upload_url())
+        return manifest, str(payload.get("sha") or "")
+
+    def _save_remote_manifest_for_review(
+        self,
+        manifest: Dict[str, Any],
+        manifest_sha: str,
+        github_token: str,
+        message: str,
+    ) -> None:
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        branch = AppConfig.get_marketplace_branch()
+        index_path = AppConfig.get_marketplace_index_path()
+        if not repo or "/" not in repo:
+            raise ValueError("当前未配置公共市场 GitHub 仓库")
+
+        normalized_manifest = {
+            "source_name": str(manifest.get("source_name") or "公共插件市场"),
+            "source_url": str(manifest.get("source_url") or AppConfig.get_marketplace_index_url()),
+            "repo_url": str(manifest.get("repo_url") or AppConfig.get_marketplace_repo_url()),
+            "upload_url": str(manifest.get("upload_url") or AppConfig.get_marketplace_upload_url()),
+            "items": copy.deepcopy(manifest.get("items", [])),
+        }
+        content = json.dumps(normalized_manifest, ensure_ascii=False, indent=2) + "\n"
+        body = {
+            "message": str(message or "Update marketplace manifest"),
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+        }
+        if str(manifest_sha or "").strip():
+            body["sha"] = str(manifest_sha).strip()
+
+        self._fetch_json_payload(
+            f"https://api.github.com/repos/{repo}/contents/{quote(index_path)}",
+            github_token=github_token,
+            method="PUT",
+            payload=body,
+        )
+
+    def _decode_github_file_content(self, payload: Dict[str, Any]) -> str:
+        content = str(payload.get("content") or "").replace("\n", "")
+        if not content:
+            raise ValueError("GitHub 索引文件内容为空")
+        encoding = str(payload.get("encoding") or "").strip().lower()
+        if encoding and encoding != "base64":
+            raise ValueError(f"暂不支持的 GitHub 文件编码: {encoding}")
+        try:
+            return base64.b64decode(content).decode("utf-8")
+        except Exception as exc:
+            raise ValueError(f"GitHub 索引文件解码失败: {exc}") from exc
+
+    def _close_github_issue(self, issue_number: int, github_token: str) -> None:
+        repo = str(AppConfig.get_marketplace_repo() or "").strip()
+        if not repo or "/" not in repo:
+            raise ValueError("当前未配置公共市场 GitHub 仓库")
+        self._fetch_json_payload(
+            f"https://api.github.com/repos/{repo}/issues/{int(issue_number)}",
+            github_token=github_token,
+            method="PATCH",
+            payload={"state": "closed"},
+        )
+
+    def _fetch_pending_issue_items(self) -> List[Dict[str, Any]]:
+        issues_api_url = AppConfig.get_marketplace_issues_api_url()
+        last_error: Optional[Exception] = None
+
+        if issues_api_url:
+            try:
+                payload = self._fetch_json_payload(issues_api_url)
+                if not isinstance(payload, list):
+                    raise ValueError("GitHub issues API 必须返回数组")
+                return self._normalize_pending_issue_list(payload)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"[marketplace] GitHub issues API 不可用，准备切换公开页面抓取: {exc}")
+
+        try:
+            return self._fetch_pending_issue_items_from_web()
+        except Exception:
+            if last_error:
+                raise last_error
+            raise
+
+    def _normalize_pending_issue_list(self, issues: List[Any]) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for issue in issues:
+            normalized = self._normalize_pending_issue(issue)
+            if normalized:
+                items.append(normalized)
+        return items
+
+    def _fetch_pending_issue_items_from_web(self) -> List[Dict[str, Any]]:
+        issues_web_url = AppConfig.get_marketplace_issues_web_url()
+        repo_url = AppConfig.get_marketplace_repo_url()
+        if not issues_web_url or not repo_url:
+            return []
+
+        issue_urls = self._collect_issue_urls_from_web(issues_web_url, repo_url)
+        items: List[Dict[str, Any]] = []
+        for issue_url in issue_urls:
+            issue_payload = self._fetch_issue_payload_from_web(issue_url)
+            normalized = self._normalize_pending_issue(issue_payload)
+            if normalized:
+                items.append(normalized)
+        return items
+
+    def _collect_issue_urls_from_web(self, issues_web_url: str, repo_url: str) -> List[str]:
+        repo_path = urlsplit(repo_url).path.strip("/")
+        if not repo_path:
+            return []
+
+        collected: List[str] = []
+        seen_urls = set()
+        next_url = issues_web_url
+        page_count = 0
+
+        while next_url and page_count < 4:
+            html_text = self._fetch_text_payload(next_url, accept="text/html,application/xhtml+xml")
+            for match in re.finditer(rf'href="/{re.escape(repo_path)}/issues/(\d+)"', html_text):
+                issue_number = str(match.group(1) or "").strip()
+                if not issue_number:
+                    continue
+                issue_url = f"{repo_url}/issues/{issue_number}"
+                if issue_url in seen_urls:
+                    continue
+                seen_urls.add(issue_url)
+                collected.append(issue_url)
+
+            next_url = self._extract_next_page_url(html_text, current_url=next_url)
+            page_count += 1
+
+        return collected
+
+    def _extract_next_page_url(self, html_text: str, current_url: str) -> str:
+        match = re.search(r'<a[^>]+href="([^"]+)"[^>]+rel="next"', str(html_text or ""), re.IGNORECASE)
+        if not match:
+            return ""
+        return urljoin(current_url, html.unescape(str(match.group(1) or "").strip()))
+
+    def _fetch_issue_payload_from_web(self, issue_url: str) -> Dict[str, Any]:
+        html_text = self._fetch_text_payload(issue_url, accept="text/html,application/xhtml+xml")
+        script_match = re.search(
+            r'<script type="application/ld\+json">\s*(\{.*?"@type":"DiscussionForumPosting".*?\})\s*</script>',
+            html_text,
+            re.DOTALL,
+        )
+        if not script_match:
+            script_match = re.search(
+                r'<script type="application/ld\+json">\s*(\{.*?"articleBody":.*?\})\s*</script>',
+                html_text,
+                re.DOTALL,
+            )
+        if not script_match:
+            raise ValueError("GitHub issue 页面缺少可解析的 JSON-LD 数据")
+
+        try:
+            metadata = json.loads(html.unescape(str(script_match.group(1) or "")))
+        except Exception as exc:
+            raise ValueError(f"GitHub issue 页面 JSON-LD 解析失败: {exc}") from exc
+
+        issue_number = self._coerce_int(re.search(r"/issues/(\d+)", issue_url).group(1) if re.search(r"/issues/(\d+)", issue_url) else 0)
+        issue_body = str(metadata.get("articleBody") or "")
+        return {
+            "number": issue_number,
+            "state": "open",
+            "title": str(metadata.get("headline") or ""),
+            "body": issue_body,
+            "html_url": issue_url,
+            "updated_at": str(metadata.get("dateModified") or metadata.get("datePublished") or ""),
+            "created_at": str(metadata.get("datePublished") or ""),
+            "labels": [],
+        }
+
+    def _normalize_pending_issue(self, issue: Any) -> Optional[Dict[str, Any]]:
+        if not self._is_marketplace_issue(issue):
+            return None
+
+        issue_number = self._coerce_int(issue.get("number"))
+        issue_title = str(issue.get("title") or "").strip()
+        issue_url = str(issue.get("html_url") or "")
+        item_payload, json_payload = self._extract_issue_item_payload(issue)
+
+        if not isinstance(item_payload, dict):
+            return None
+
+        item_payload["id"] = f"{self.ISSUE_ID_PREFIX}{issue_number}"
+        item_payload["downloads"] = 0
+        item_payload["stars"] = 0
+        item_payload["updated_at"] = str(issue.get("updated_at") or issue.get("created_at") or "")
+        item_payload["repo_url"] = issue_url
+        normalized = self._normalize_item(item_payload)
+        if not normalized:
+            return None
+
+        normalized["review_status"] = "pending"
+        normalized["review_label"] = "待审核"
+        normalized["issue_number"] = issue_number
+        normalized["issue_url"] = issue_url
+        normalized["issue_title"] = issue_title
+        normalized["downloads"] = 0
+        normalized["stars"] = 0
+        if json_payload is None:
+            normalized["import_disabled"] = True
+            normalized["summary"] = normalized.get("summary") or "这个投稿缺少可导入的 JSON 代码块，请去 GitHub issue 里补充。"
+        return normalized
+
+    def _is_marketplace_issue(self, issue: Any) -> bool:
+        if not isinstance(issue, dict):
+            return False
+        if issue.get("pull_request"):
+            return False
+        if str(issue.get("state") or "").lower() != "open":
+            return False
+
+        title = str(issue.get("title") or "").strip()
+        body = str(issue.get("body") or "")
+        labels = [
+            str((label or {}).get("name") or "").strip().lower()
+            for label in issue.get("labels", [])
+            if isinstance(label, dict)
+        ]
+        if "marketplace" in labels:
+            return True
+        if title.startswith(self.ISSUE_TITLE_PREFIX):
+            return True
+        return self.ISSUE_MARKER in body
+
+    def _extract_issue_json_payload(self, body: str) -> Optional[Dict[str, Any]]:
+        text = str(body or "")
+        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            match = re.search(r"```\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if not match:
+            return None
+
+        try:
+            payload = json.loads(match.group(1))
+        except Exception as exc:
+            logger.warning(f"[marketplace] 待审核投稿 JSON 解析失败: {exc}")
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _extract_issue_metadata_payload(self, title: str, body: str) -> Dict[str, Any]:
+        cleaned_title = str(title or "").strip()
+        if cleaned_title.startswith(self.ISSUE_TITLE_PREFIX):
+            cleaned_title = cleaned_title[len(self.ISSUE_TITLE_PREFIX):].strip()
+
+        metadata: Dict[str, str] = {}
+        for line in str(body or "").splitlines():
+            match = re.match(r"^\s*-\s*([^:：]+)\s*[:：]\s*(.+?)\s*$", line)
+            if not match:
+                continue
+            metadata[str(match.group(1)).strip()] = str(match.group(2)).strip()
+
+        summary = ""
+        summary_match = re.search(r"##\s*简介\s*(.+?)(?:\n##|\Z)", str(body or ""), re.DOTALL)
+        if summary_match:
+            summary = str(summary_match.group(1)).strip()
+
+        item_type_text = metadata.get("类型", "站点配置")
+        item_type = "command_bundle" if "命令" in item_type_text else "site_config"
+        tags = [
+            part.strip()
+            for part in re.split(r"[，,]", metadata.get("标签", ""))
+            if part.strip()
+        ]
+
+        return {
+            "item_type": item_type,
+            "title": metadata.get("标题") or cleaned_title or "待审核投稿",
+            "summary": summary,
+            "author": metadata.get("作者") or self.DEFAULT_AUTHOR,
+            "category": metadata.get("分类") or metadata.get("站点") or (
+                self.DEFAULT_COMMAND_CATEGORY if item_type == "command_bundle" else self.DEFAULT_SITE_CATEGORY
+            ),
+            "site_domain": metadata.get("站点", ""),
+            "preset_name": metadata.get("预设", ""),
+            "version": metadata.get("版本", ""),
+            "compatibility": metadata.get("兼容", ""),
+            "tags": tags,
         }
 
     def _normalize_item(self, raw_item: Any) -> Optional[Dict[str, Any]]:
@@ -279,6 +1015,12 @@ class MarketplaceService:
             "compatibility": str(raw_item.get("compatibility") or ""),
             "repo_url": str(raw_item.get("repo_url") or ""),
             "package_url": str(raw_item.get("package_url") or raw_item.get("download_url") or ""),
+            "review_status": str(raw_item.get("review_status") or ""),
+            "review_label": str(raw_item.get("review_label") or ""),
+            "issue_number": self._coerce_int(raw_item.get("issue_number")),
+            "issue_url": str(raw_item.get("issue_url") or ""),
+            "issue_title": str(raw_item.get("issue_title") or ""),
+            "import_disabled": bool(raw_item.get("import_disabled")),
             "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
         }
 
@@ -295,7 +1037,7 @@ class MarketplaceService:
             "mode": "external",
             "item": self._to_list_item(normalized),
             "submission_url": submission_url,
-            "message": "已生成 GitHub 公共投稿页，请在打开的页面里粘贴已复制的完整 JSON 预览。",
+            "message": "已生成 GitHub 公共投稿页，页面基础信息已自动填写，请把已复制的 JSON 代码块粘贴到“预览 JSON”下面。",
         }
 
     def _build_public_submission_url(self, item: Dict[str, Any]) -> str:
@@ -316,6 +1058,8 @@ class MarketplaceService:
         tags = item.get("tags") or []
 
         lines = [
+            self.ISSUE_MARKER,
+            "",
             "## 基本信息",
             f"- 类型: {item_type_label}",
             f"- 标题: {item.get('name') or ''}",
@@ -340,7 +1084,7 @@ class MarketplaceService:
             str(item.get("summary") or "请补充简介").strip(),
             "",
             "## 预览 JSON",
-            "请把应用里已经复制的完整 JSON 预览粘贴到这里。",
+            "请把应用里已经复制的 JSON 代码块粘贴到这里，不需要重复粘贴上面的基本信息和简介。",
         ])
         return "\n".join(lines)
 
