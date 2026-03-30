@@ -551,9 +551,10 @@ exit /b 1
 echo [OK] 检测到 !BROWSER_NAME!
 echo [INFO] 路径: !BROWSER_EXE!
 
-set "BROWSER_ARGS=--remote-debugging-port=!BROWSER_PORT! --user-data-dir=!PROFILE_DIR! --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,AutomaticTabDiscarding,TabFreeze,IntensiveWakeUpThrottling"
+REM 构造浏览器启动参数
+set "BROWSER_ARGS=--remote-debugging-port=%BROWSER_PORT% --user-data-dir=""%PROFILE_DIR%"" --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,AutomaticTabDiscarding,TabFreeze,IntensiveWakeUpThrottling"
 if defined BROWSER_PROFILE_NAME (
-    set "BROWSER_ARGS=!BROWSER_ARGS! --profile-directory=!BROWSER_PROFILE_NAME!"
+    set "BROWSER_ARGS=!BROWSER_ARGS! --profile-directory=""%BROWSER_PROFILE_NAME%"""
 )
 
 if /I "!PROXY_ENABLED!"=="true" (
@@ -566,8 +567,8 @@ if /I "!PROXY_ENABLED!"=="true" (
     )
 )
 
-echo [INFO] 启动浏览器...
-start "" "!BROWSER_EXE!" !BROWSER_ARGS! about:blank
+REM 启动浏览器（同时打开 doubao 和 gemini）
+start "" "!BROWSER_EXE!" !BROWSER_ARGS! --new-window "https://www.doubao.com" "https://gemini.google.com"
 
 echo [INFO] 等待 !BROWSER_NAME! 就绪...
 set "WAIT_COUNT=0"
