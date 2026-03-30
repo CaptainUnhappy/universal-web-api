@@ -12,6 +12,7 @@ import time
 import asyncio
 import queue
 import threading
+import re
 from typing import Optional, Any, Dict, List
 
 from fastapi import APIRouter, Request, HTTPException, Header, Depends
@@ -40,6 +41,11 @@ logger = get_logger("API.TAB")
 router = APIRouter()
 FOLLOW_DEFAULT_PRESET = "__DEFAULT__"
 
+_GEMINI_IMAGE_PLACEHOLDER_RE = re.compile(
+    r"^\s*https?://(?:[\w.-]+\.)?googleusercontent\.com/image_generation_content/\d+\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _extract_stream_error_message(chunk: Any) -> str:
     if not isinstance(chunk, str) or not chunk.startswith("data: "):
@@ -55,6 +61,99 @@ def _extract_stream_error_message(chunk: Any) -> str:
         return str(error.get("message") or "").strip()
     except Exception:
         return ""
+
+
+def _build_non_stream_response_from_chunks(body: "ChatRequest", chunks: List[str]) -> JSONResponse:
+    """将流式 chunk 聚合为与主路由一致的非流式响应。"""
+    collected_content: List[str] = []
+    collected_images: List[str] = []
+    error_data = None
+
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            continue
+        if chunk.startswith("data: [DONE]"):
+            continue
+        if not chunk.startswith("data: "):
+            continue
+
+        try:
+            data_str = chunk[6:].strip()
+            if not data_str:
+                continue
+            data = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+
+        if "error" in data:
+            error_data = data
+            break
+
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+
+        first_choice = choices[0] if isinstance(choices[0], dict) else {}
+        delta = first_choice.get("delta", {}) if isinstance(first_choice, dict) else {}
+        if not isinstance(delta, dict):
+            continue
+
+        content = delta.get("content", "")
+        if content:
+            collected_content.append(content)
+
+        images = delta.get("images", [])
+        if isinstance(images, list) and images:
+            collected_images.extend(images)
+
+    if error_data:
+        return JSONResponse(content=error_data, status_code=500)
+
+    full_content = "".join(collected_content)
+
+    if collected_images:
+        normalized_images: List[str] = []
+        for ref in collected_images:
+            value = str(ref or "").strip()
+            if value and value not in normalized_images:
+                normalized_images.append(value)
+        collected_images = normalized_images
+
+        full_content = _GEMINI_IMAGE_PLACEHOLDER_RE.sub("", full_content)
+        full_content = re.sub(r"\n{3,}", "\n\n", full_content).strip()
+
+        if "![image_" not in full_content and collected_images:
+            markdown = "\n".join(
+                f"![image_{idx}]({ref})"
+                for idx, ref in enumerate(collected_images)
+            )
+            if full_content:
+                full_content = f"{full_content}\n\n{markdown}"
+            else:
+                full_content = markdown
+
+    message = {
+        "role": "assistant",
+        "content": full_content
+    }
+
+    if collected_images:
+        message["images"] = collected_images
+
+    response = {
+        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": body.model,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    }
+
+    return JSONResponse(content=response)
 
 # ================= 请求模型 =================
 
@@ -465,52 +564,13 @@ async def _non_stream_with_tab_index(
     tab_index: int
 ) -> JSONResponse:
     """使用指定标签页的非流式响应"""
-    collected_content = []
-    error_data = None
+    chunks: List[str] = []
 
     async for chunk in _stream_with_tab_index(request, body, ctx, tab_index):
         if isinstance(chunk, str):
-            if chunk.startswith("data: [DONE]"):
-                continue
+            chunks.append(chunk)
 
-            if chunk.startswith("data: "):
-                try:
-                    data_str = chunk[6:].strip()
-                    if not data_str:
-                        continue
-                    data = json.loads(data_str)
-
-                    if "error" in data:
-                        error_data = data
-                        break
-
-                    if "choices" in data and data["choices"]:
-                        delta = data["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            collected_content.append(content)
-
-                except json.JSONDecodeError:
-                    continue
-
-    if error_data:
-        return JSONResponse(content=error_data, status_code=500)
-
-    full_content = "".join(collected_content)
-    response = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": body.model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": full_content},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
-
-    return JSONResponse(content=response)
+    return _build_non_stream_response_from_chunks(body, chunks)
 
 
 async def _stream_with_route_domain(
@@ -637,52 +697,13 @@ async def _non_stream_with_route_domain(
     route_domain: str
 ) -> JSONResponse:
     """使用指定域名路由的非流式响应"""
-    collected_content = []
-    error_data = None
+    chunks: List[str] = []
 
     async for chunk in _stream_with_route_domain(request, body, ctx, route_domain):
         if isinstance(chunk, str):
-            if chunk.startswith("data: [DONE]"):
-                continue
+            chunks.append(chunk)
 
-            if chunk.startswith("data: "):
-                try:
-                    data_str = chunk[6:].strip()
-                    if not data_str:
-                        continue
-                    data = json.loads(data_str)
-
-                    if "error" in data:
-                        error_data = data
-                        break
-
-                    if "choices" in data and data["choices"]:
-                        delta = data["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            collected_content.append(content)
-
-                except json.JSONDecodeError:
-                    continue
-
-    if error_data:
-        return JSONResponse(content=error_data, status_code=500)
-
-    full_content = "".join(collected_content)
-    response = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": body.model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": full_content},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
-
-    return JSONResponse(content=response)
+    return _build_non_stream_response_from_chunks(body, chunks)
 
 
 def _execute_browser_non_stream_for_tab(

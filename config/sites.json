@@ -673,7 +673,7 @@
           "hint_text": "完全专注于文件内容"
         },
         "stream_config": {
-          "mode": "dom",
+          "mode": "network",
           "hard_timeout": 300,
           "silence_threshold": 2.5,
           "initial_wait": 30,
