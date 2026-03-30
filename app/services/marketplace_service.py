@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit, qu
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from app import __version__ as APP_VERSION
 from app.core.config import AppConfig, get_logger
 from app.services.config_engine import config_engine
 
@@ -29,6 +30,8 @@ class MarketplaceService:
     DEFAULT_AUTHOR = "社区贡献"
     DEFAULT_SITE_CATEGORY = "站点配置"
     DEFAULT_COMMAND_CATEGORY = "命令系统"
+    DEFAULT_PARSER_CATEGORY = "响应解析器"
+    RESPONSE_PARSER_MIN_VERSION = "2.7.1"
     ISSUE_MARKER = "<!-- marketplace-submission -->"
     ISSUE_TITLE_PREFIX = "[市场投稿]"
     ISSUE_ID_PREFIX = "pending-issue-"
@@ -37,9 +40,13 @@ class MarketplaceService:
         self._cached_manifest: Optional[Dict[str, Any]] = None
         self._cached_at = 0.0
 
-    def list_catalog(self, force_refresh: bool = False) -> Dict[str, Any]:
+    def list_catalog(self, force_refresh: bool = False, app_version: str = "") -> Dict[str, Any]:
         manifest = self._load_manifest(force_refresh=force_refresh)
-        items = [self._to_list_item(item) for item in manifest.get("items", [])]
+        visible_items = self._filter_items_for_client_version(
+            manifest.get("items", []),
+            client_version=app_version,
+        )
+        items = [self._to_list_item(item) for item in visible_items]
         items.sort(key=lambda item: (-int(item.get("downloads", 0) or 0), str(item.get("name") or "")))
         pending_count = sum(1 for item in items if str(item.get("review_status") or "") == "pending")
 
@@ -55,6 +62,8 @@ class MarketplaceService:
             "submit_help": manifest.get("submit_help", ""),
             "submit_target": manifest.get("submit_target", ""),
             "default_sort": "downloads",
+            "client_version": str(app_version or "").strip(),
+            "server_version": APP_VERSION,
             "count": len(items),
             "approved_count": max(0, len(items) - pending_count),
             "pending_count": pending_count,
@@ -62,7 +71,7 @@ class MarketplaceService:
             "items": items,
         }
 
-    def get_item(self, item_id: str, force_refresh: bool = False) -> Dict[str, Any]:
+    def get_item(self, item_id: str, force_refresh: bool = False, app_version: str = "") -> Dict[str, Any]:
         manifest = self._load_manifest(force_refresh=force_refresh)
         normalized_id = str(item_id or "").strip()
         if not normalized_id:
@@ -74,6 +83,8 @@ class MarketplaceService:
         )
         if not item:
             raise KeyError(f"未找到市场项目: {normalized_id}")
+        if not self._is_item_visible_for_client_version(item, client_version=app_version):
+            raise KeyError(f"当前版本不可用: {normalized_id}")
 
         if item.get("import_disabled"):
             return item
@@ -81,9 +92,58 @@ class MarketplaceService:
         item_type = item.get("item_type", self.DEFAULT_TYPE)
         if item_type == "command_bundle":
             item["command_bundle"] = self._resolve_command_bundle(item)
+        elif item_type == "response_parser":
+            item["parser_package"] = self._resolve_response_parser(item)
         else:
             item["site_config"] = self._resolve_site_config(item)
         return item
+
+    def _filter_items_for_client_version(self, items: Any, client_version: str) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for item in items or []:
+            if isinstance(item, dict) and self._is_item_visible_for_client_version(item, client_version):
+                result.append(copy.deepcopy(item))
+        return result
+
+    def _is_item_visible_for_client_version(self, item: Dict[str, Any], client_version: str) -> bool:
+        min_version = self._get_item_min_client_version(item)
+        normalized_client_version = self._normalize_semver_string(client_version)
+        if not min_version:
+            return True
+        if not normalized_client_version:
+            return False
+        return self._compare_semver(normalized_client_version, min_version) >= 0
+
+    def _get_item_min_client_version(self, item: Dict[str, Any]) -> str:
+        item_type = str((item or {}).get("item_type") or self.DEFAULT_TYPE).strip()
+        explicit = self._normalize_semver_string((item or {}).get("min_app_version"))
+        if explicit:
+            return explicit
+        if item_type == "response_parser":
+            return self.RESPONSE_PARSER_MIN_VERSION
+        return ""
+
+    @staticmethod
+    def _normalize_semver_string(value: Any) -> str:
+        text = str(value or "").strip()
+        match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", text)
+        if not match:
+            return ""
+        parts = [int(part or 0) for part in match.groups(default="0")]
+        return ".".join(str(part) for part in parts)
+
+    @classmethod
+    def _compare_semver(cls, left: str, right: str) -> int:
+        left_parts = [int(part) for part in cls._normalize_semver_string(left).split(".") if part != ""]
+        right_parts = [int(part) for part in cls._normalize_semver_string(right).split(".") if part != ""]
+        max_len = max(len(left_parts), len(right_parts), 3)
+        left_parts.extend([0] * (max_len - len(left_parts)))
+        right_parts.extend([0] * (max_len - len(right_parts)))
+        if left_parts < right_parts:
+            return -1
+        if left_parts > right_parts:
+            return 1
+        return 0
 
     def submit_item(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self._normalize_submission(payload)
@@ -188,6 +248,8 @@ class MarketplaceService:
                 pending_items,
             )
             manifest["items"] = self._merge_item_lists(manifest.get("items", []), pending_items)
+
+        manifest["items"] = self._enrich_item_submitters(manifest.get("items", []))
 
         default_source_name = "公共插件市场" if remote_url else "本地配置市场"
         manifest.setdefault("source_name", default_source_name)
@@ -498,13 +560,13 @@ class MarketplaceService:
         manifest.setdefault("source_url", AppConfig.get_marketplace_index_url())
         manifest.setdefault("upload_url", AppConfig.get_marketplace_upload_url())
 
-        self._save_remote_manifest_for_review(
+        self._save_remote_manifest_for_review_with_fallback(
             manifest,
             manifest_sha,
             github_token,
             message=f"Approve marketplace submission from issue #{issue_number}",
         )
-        self._close_github_issue(issue_number, github_token)
+        self._close_github_issue_with_fallback(issue_number, github_token)
 
         self._cached_manifest = None
         self._cached_at = 0.0
@@ -527,7 +589,7 @@ class MarketplaceService:
         if not self._is_marketplace_issue(issue_payload):
             raise ValueError(f"GitHub issue #{issue_number} 不是待审核投稿")
 
-        self._close_github_issue(issue_number, github_token)
+        self._close_github_issue_with_fallback(issue_number, github_token)
         self._cached_manifest = None
         self._cached_at = 0.0
 
@@ -537,6 +599,137 @@ class MarketplaceService:
             "issue_number": int(issue_number),
             "message": f"已拒绝并关闭投稿 #{issue_number}",
         }
+
+    def remove_item(self, item_id: str, github_token: str) -> Dict[str, Any]:
+        context = self._resolve_review_context(github_token, require_review=False)
+        actor_login = str(context.get("login") or "").strip()
+        if not actor_login:
+            raise ValueError("无法识别当前 GitHub 账号，请确认 token 可读取当前用户信息")
+
+        manifest = self._load_manifest(force_refresh=True)
+        target = next(
+            (copy.deepcopy(entry) for entry in manifest.get("items", []) if str(entry.get("id") or "").strip() == str(item_id or "").strip()),
+            None,
+        )
+        if not target:
+            raise KeyError(f"未找到市场项目: {item_id}")
+
+        if not self._can_manage_item(target, context, github_token):
+            raise ValueError("只有投稿作者本人或仓库管理员可以撤回 / 下架这个项目")
+
+        if str(target.get("review_status") or "") == "pending":
+            issue_number = self._coerce_int(target.get("issue_number"))
+            if issue_number <= 0:
+                raise ValueError("待审核投稿缺少 issue 编号，无法撤回")
+            self._close_github_issue_with_fallback(issue_number, github_token)
+            self._cached_manifest = None
+            self._cached_at = 0.0
+            return {
+                "success": True,
+                "action": "withdraw",
+                "item_id": str(item_id or ""),
+                "message": f"已撤回投稿 #{issue_number}",
+            }
+
+        remote_manifest, manifest_sha = self._load_remote_manifest_for_review(github_token)
+        existing_items = list(remote_manifest.get("items", []))
+        next_items = [
+            entry for entry in existing_items
+            if str((entry or {}).get("id") or "").strip() != str(item_id or "").strip()
+        ]
+        if len(next_items) == len(existing_items):
+            raise KeyError(f"远程市场里没有找到项目: {item_id}")
+
+        remote_manifest["items"] = next_items
+        self._save_remote_manifest_for_review_with_fallback(
+            remote_manifest,
+            manifest_sha,
+            github_token,
+            message=f"Remove marketplace item {item_id}",
+        )
+
+        self._cached_manifest = None
+        self._cached_at = 0.0
+        try:
+            self._save_remote_cache_manifest(remote_manifest)
+        except Exception as exc:
+            logger.warning(f"[marketplace] 下架后写入本地缓存失败: {exc}")
+
+        return {
+            "success": True,
+            "action": "remove",
+            "item_id": str(item_id or ""),
+            "message": "已从公共市场下架这个项目",
+        }
+
+    def _iter_mutation_tokens(self, github_token: str) -> List[str]:
+        tokens: List[str] = []
+        for candidate in [github_token, AppConfig.get_marketplace_github_token()]:
+            token = str(candidate or "").strip()
+            if token and token not in tokens:
+                tokens.append(token)
+        return tokens
+
+    def _save_remote_manifest_for_review_with_fallback(
+        self,
+        manifest: Dict[str, Any],
+        manifest_sha: str,
+        github_token: str,
+        message: str,
+    ) -> None:
+        last_error: Optional[Exception] = None
+        for token in self._iter_mutation_tokens(github_token):
+            try:
+                self._save_remote_manifest_for_review(
+                    manifest,
+                    manifest_sha,
+                    token,
+                    message=message,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+
+        if last_error:
+            raise last_error
+        raise ValueError("当前没有可用于写入公共市场的 GitHub Token")
+
+    def _close_github_issue_with_fallback(self, issue_number: int, github_token: str) -> None:
+        last_error: Optional[Exception] = None
+        for token in self._iter_mutation_tokens(github_token):
+            try:
+                self._close_github_issue(issue_number, token)
+                return
+            except Exception as exc:
+                last_error = exc
+
+        if last_error:
+            raise last_error
+        raise ValueError("当前没有可用于关闭投稿 issue 的 GitHub Token")
+
+    def _can_manage_item(self, item: Dict[str, Any], context: Dict[str, Any], github_token: str) -> bool:
+        if bool(context.get("can_review")):
+            return True
+
+        actor_login = str(context.get("login") or "").strip().lower()
+        if not actor_login:
+            return False
+
+        submitted_by = str((item or {}).get("submitted_by") or "").strip().lower()
+        if submitted_by and submitted_by == actor_login:
+            return True
+
+        issue_number = self._coerce_int((item or {}).get("issue_number"))
+        if issue_number <= 0:
+            return False
+
+        try:
+            issue_payload = self._fetch_github_issue(issue_number, github_token)
+        except Exception:
+            return False
+
+        issue_submitter = self._extract_issue_submitter(issue_payload).strip().lower()
+        return bool(issue_submitter) and issue_submitter == actor_login
 
     def _resolve_review_context(self, github_token: str, require_review: bool = False) -> Dict[str, Any]:
         token = str(github_token or "").strip()
@@ -606,6 +799,62 @@ class MarketplaceService:
             return "只读成员"
         return "未知权限"
 
+    def _extract_issue_submitter(self, issue: Any) -> str:
+        if not isinstance(issue, dict):
+            return ""
+
+        user = issue.get("user")
+        if isinstance(user, dict):
+            login = str(user.get("login") or user.get("name") or "").strip()
+            if login:
+                return login
+        elif isinstance(user, list):
+            for entry in user:
+                if not isinstance(entry, dict):
+                    continue
+                login = str(entry.get("login") or entry.get("name") or "").strip()
+                if login:
+                    return login
+        elif isinstance(user, str):
+            login = str(user).strip()
+            if login:
+                return login
+
+        author = issue.get("author")
+        if isinstance(author, dict):
+            name = str(author.get("name") or author.get("login") or "").strip()
+            if name:
+                return name
+        elif isinstance(author, list):
+            for entry in author:
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or entry.get("login") or "").strip()
+                else:
+                    name = str(entry or "").strip()
+                if name:
+                    return name
+        elif isinstance(author, str):
+            name = str(author).strip()
+            if name:
+                return name
+
+        return ""
+
+    def _should_replace_display_author(self, author_name: str) -> bool:
+        normalized = str(author_name or "").strip().lower()
+        return normalized in {"", "本地投稿", "社区贡献", "local", "anonymous", "匿名"}
+
+    def _apply_issue_submitter_to_item_payload(self, item_payload: Dict[str, Any], issue: Any) -> Dict[str, Any]:
+        payload = copy.deepcopy(item_payload)
+        submitter = self._extract_issue_submitter(issue)
+        if not submitter:
+            return payload
+
+        payload["submitted_by"] = submitter
+        if self._should_replace_display_author(payload.get("author")):
+            payload["author"] = submitter
+        return payload
+
     def _fetch_github_issue(self, issue_number: int, github_token: str) -> Dict[str, Any]:
         repo = str(AppConfig.get_marketplace_repo() or "").strip()
         if not repo or "/" not in repo:
@@ -625,6 +874,7 @@ class MarketplaceService:
             raise ValueError("待审核投稿内容无法解析")
         if json_payload is None:
             raise ValueError("该投稿缺少可导入的 JSON 内容，暂时不能直接收录")
+        item_payload = self._apply_issue_submitter_to_item_payload(item_payload, issue)
 
         issue_number = self._coerce_int(issue.get("number"))
         issue_title = str(issue.get("title") or "").strip()
@@ -672,6 +922,44 @@ class MarketplaceService:
                 continue
             filtered.append(copy.deepcopy(item))
         return filtered
+
+    def _enrich_item_submitters(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        enriched_items: List[Dict[str, Any]] = []
+        for raw_item in items or []:
+            item = copy.deepcopy(raw_item)
+            if not self._needs_submitter_enrichment(item):
+                enriched_items.append(item)
+                continue
+
+            issue_payload = self._fetch_issue_for_submitter_enrichment(item)
+            if isinstance(issue_payload, dict):
+                item = self._apply_issue_submitter_to_item_payload(item, issue_payload)
+            enriched_items.append(item)
+        return enriched_items
+
+    def _needs_submitter_enrichment(self, item: Dict[str, Any]) -> bool:
+        if not isinstance(item, dict):
+            return False
+        if str(item.get("submitted_by") or "").strip():
+            return False
+        return self._coerce_int(item.get("issue_number")) > 0
+
+    def _fetch_issue_for_submitter_enrichment(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        issue_number = self._coerce_int((item or {}).get("issue_number"))
+        issue_url = str((item or {}).get("issue_url") or (item or {}).get("repo_url") or "").strip()
+
+        if issue_number > 0:
+            try:
+                return self._fetch_github_issue(issue_number, "")
+            except Exception:
+                pass
+
+        if issue_url:
+            try:
+                return self._fetch_issue_payload_from_web(issue_url)
+            except Exception:
+                return None
+        return None
 
     def _load_remote_manifest_for_review(self, github_token: str) -> tuple[Dict[str, Any], str]:
         return self._load_remote_manifest_from_repo_api(github_token=github_token)
@@ -857,7 +1145,7 @@ class MarketplaceService:
 
         issue_number = self._coerce_int(re.search(r"/issues/(\d+)", issue_url).group(1) if re.search(r"/issues/(\d+)", issue_url) else 0)
         issue_body = str(metadata.get("articleBody") or "")
-        return {
+        issue_payload = {
             "number": issue_number,
             "state": "open",
             "title": str(metadata.get("headline") or ""),
@@ -867,6 +1155,10 @@ class MarketplaceService:
             "created_at": str(metadata.get("datePublished") or ""),
             "labels": [],
         }
+        submitter = self._extract_issue_submitter({"author": metadata.get("author")})
+        if submitter:
+            issue_payload["user"] = {"login": submitter}
+        return issue_payload
 
     def _normalize_pending_issue(self, issue: Any) -> Optional[Dict[str, Any]]:
         if not self._is_marketplace_issue(issue):
@@ -880,6 +1172,7 @@ class MarketplaceService:
         if not isinstance(item_payload, dict):
             return None
 
+        item_payload = self._apply_issue_submitter_to_item_payload(item_payload, issue)
         item_payload["id"] = f"{self.ISSUE_ID_PREFIX}{issue_number}"
         item_payload["downloads"] = 0
         item_payload["stars"] = 0
@@ -954,8 +1247,14 @@ class MarketplaceService:
         if summary_match:
             summary = str(summary_match.group(1)).strip()
 
-        item_type_text = metadata.get("类型", "站点配置")
-        item_type = "command_bundle" if "命令" in item_type_text else "site_config"
+        item_type_text = str(metadata.get("类型", "站点配置"))
+        item_type_text_lower = item_type_text.lower()
+        if "parser" in item_type_text_lower or "解析器" in item_type_text:
+            item_type = "response_parser"
+        elif "命令" in item_type_text or "command" in item_type_text_lower:
+            item_type = "command_bundle"
+        else:
+            item_type = "site_config"
         tags = [
             part.strip()
             for part in re.split(r"[，,]", metadata.get("标签", ""))
@@ -968,7 +1267,9 @@ class MarketplaceService:
             "summary": summary,
             "author": metadata.get("作者") or self.DEFAULT_AUTHOR,
             "category": metadata.get("分类") or metadata.get("站点") or (
-                self.DEFAULT_COMMAND_CATEGORY if item_type == "command_bundle" else self.DEFAULT_SITE_CATEGORY
+                self.DEFAULT_COMMAND_CATEGORY
+                if item_type == "command_bundle"
+                else (self.DEFAULT_PARSER_CATEGORY if item_type == "response_parser" else self.DEFAULT_SITE_CATEGORY)
             ),
             "site_domain": metadata.get("站点", ""),
             "preset_name": metadata.get("预设", ""),
@@ -983,10 +1284,13 @@ class MarketplaceService:
 
         item_type = str(raw_item.get("item_type") or self.DEFAULT_TYPE).strip() or self.DEFAULT_TYPE
         site_domain = str(raw_item.get("site_domain") or raw_item.get("domain") or "").strip()
-        preset_name = str(raw_item.get("preset_name") or "主预设").strip() or "主预设"
+        parser_package = raw_item.get("parser_package") if isinstance(raw_item.get("parser_package"), dict) else {}
+        parser_id = str(raw_item.get("parser_id") or parser_package.get("parser_id") or "").strip()
+        default_preset_name = "" if item_type in {"command_bundle", "response_parser"} else "主预设"
+        preset_name = str(raw_item.get("preset_name") or default_preset_name).strip() or default_preset_name
         base_id = str(raw_item.get("id") or "").strip()
         if not base_id:
-            suffix = site_domain or item_type
+            suffix = site_domain or parser_id or item_type
             base_id = f"{item_type}-{suffix}-{preset_name}"
         item_id = re.sub(r"[^a-zA-Z0-9._-\u4e00-\u9fff]+", "-", base_id).strip("-") or f"market-{int(time.time() * 1000)}"
 
@@ -995,7 +1299,9 @@ class MarketplaceService:
         category = str(raw_item.get("category") or "").strip()
         if not category:
             category = site_domain if item_type == "site_config" and site_domain else (
-                self.DEFAULT_COMMAND_CATEGORY if item_type == "command_bundle" else self.DEFAULT_SITE_CATEGORY
+                self.DEFAULT_COMMAND_CATEGORY
+                if item_type == "command_bundle"
+                else (self.DEFAULT_PARSER_CATEGORY if item_type == "response_parser" else self.DEFAULT_SITE_CATEGORY)
             )
 
         item = {
@@ -1004,6 +1310,7 @@ class MarketplaceService:
             "name": str(raw_item.get("name") or raw_item.get("title") or item_id),
             "summary": str(raw_item.get("summary") or raw_item.get("description") or ""),
             "author": str(raw_item.get("author") or self.DEFAULT_AUTHOR),
+            "submitted_by": str(raw_item.get("submitted_by") or "").strip(),
             "category": category,
             "site_domain": site_domain,
             "domain": site_domain,
@@ -1022,12 +1329,20 @@ class MarketplaceService:
             "issue_title": str(raw_item.get("issue_title") or ""),
             "import_disabled": bool(raw_item.get("import_disabled")),
             "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
+            "parser_id": parser_id,
+            "parser_class_name": str(raw_item.get("parser_class_name") or parser_package.get("class_name") or "").strip(),
+            "parser_module_name": str(raw_item.get("parser_module_name") or parser_package.get("module_name") or "").strip(),
+            "min_app_version": self._normalize_semver_string(raw_item.get("min_app_version")) or (
+                self.RESPONSE_PARSER_MIN_VERSION if item_type == "response_parser" else ""
+            ),
         }
 
         if isinstance(raw_item.get("site_config"), dict):
             item["site_config"] = copy.deepcopy(raw_item["site_config"])
         if isinstance(raw_item.get("command_bundle"), dict):
             item["command_bundle"] = copy.deepcopy(raw_item["command_bundle"])
+        if isinstance(raw_item.get("parser_package"), dict):
+            item["parser_package"] = copy.deepcopy(raw_item["parser_package"])
 
         return item
 
@@ -1054,7 +1369,7 @@ class MarketplaceService:
 
     def _build_public_submission_body(self, item: Dict[str, Any]) -> str:
         item_type = str(item.get("item_type") or self.DEFAULT_TYPE).strip()
-        item_type_label = "命令系统" if item_type == "command_bundle" else "站点配置"
+        item_type_label = self._get_item_type_label(item_type)
         tags = item.get("tags") or []
 
         lines = [
@@ -1088,6 +1403,13 @@ class MarketplaceService:
         ])
         return "\n".join(lines)
 
+    def _get_item_type_label(self, item_type: str) -> str:
+        if item_type == "command_bundle":
+            return "命令系统"
+        if item_type == "response_parser":
+            return "响应解析器"
+        return "站点配置"
+
     @staticmethod
     def _append_query_params(url: str, params: Dict[str, Any]) -> str:
         parts = urlsplit(str(url or "").strip())
@@ -1108,6 +1430,7 @@ class MarketplaceService:
         result = copy.deepcopy(item)
         result.pop("site_config", None)
         result.pop("command_bundle", None)
+        result.pop("parser_package", None)
         result.pop("package_url", None)
         return result
 
@@ -1159,6 +1482,18 @@ class MarketplaceService:
             return self._normalize_command_bundle(payload)
 
         raise ValueError("命令包缺少可导入内容")
+
+    def _resolve_response_parser(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        embedded = item.get("parser_package")
+        if isinstance(embedded, dict):
+            return self._normalize_response_parser_package(embedded)
+
+        package_url = str(item.get("package_url") or "").strip()
+        if package_url:
+            payload = self._fetch_json(package_url)
+            return self._normalize_response_parser_package(payload)
+
+        raise ValueError("解析器包缺少可导入内容")
 
     def _normalize_site_config_payload(
         self,
@@ -1223,6 +1558,55 @@ class MarketplaceService:
 
         raise ValueError("命令包必须包含 commands 数组")
 
+    def _normalize_response_parser_package(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("解析器包必须是对象")
+
+        nested = payload.get("parser_package")
+        if isinstance(nested, dict):
+            return self._normalize_response_parser_package(nested)
+
+        parser_id = str(payload.get("parser_id") or payload.get("id") or "").strip()
+        class_name = str(payload.get("class_name") or payload.get("class") or "").strip()
+        module_name = str(payload.get("module_name") or payload.get("module") or payload.get("filename") or "").strip()
+        source_code = str(payload.get("source_code") or payload.get("content") or payload.get("code") or "")
+        description = str(payload.get("description") or "").strip()
+        name = str(payload.get("name") or parser_id or class_name or "").strip()
+        supported_patterns = payload.get("supported_patterns") or payload.get("patterns") or []
+
+        if module_name.endswith(".py"):
+            module_name = module_name[:-3]
+
+        if not parser_id:
+            raise ValueError("解析器包缺少 parser_id")
+        if not class_name:
+            raise ValueError("解析器包缺少 class_name")
+        if not module_name:
+            raise ValueError("解析器包缺少 module_name")
+        if not source_code.strip():
+            raise ValueError("解析器包缺少源码")
+        if not re.match(r"^[A-Za-z0-9._-]+$", parser_id):
+            raise ValueError(f"解析器 ID 不合法: {parser_id}")
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", class_name):
+            raise ValueError(f"解析器类名不合法: {class_name}")
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", module_name.replace("-", "_")):
+            raise ValueError(f"解析器模块名不合法: {module_name}")
+
+        return {
+            "parser_id": parser_id,
+            "class_name": class_name,
+            "module_name": module_name.replace("-", "_"),
+            "filename": f"{module_name.replace('-', '_')}.py",
+            "name": name or parser_id,
+            "description": description,
+            "source_code": source_code,
+            "supported_patterns": [
+                str(pattern).strip()
+                for pattern in (supported_patterns if isinstance(supported_patterns, list) else [])
+                if str(pattern).strip()
+            ],
+        }
+
     def _normalize_submission(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("投稿内容必须是对象")
@@ -1261,6 +1645,7 @@ class MarketplaceService:
             "tags": normalized_tags,
             "repo_url": "",
             "package_url": "",
+            "min_app_version": "",
         }
 
         if item_type == "command_bundle":
@@ -1270,6 +1655,19 @@ class MarketplaceService:
             item["domain"] = ""
             item["preset_name"] = ""
             item["command_bundle"] = bundle
+            return item
+
+        if item_type == "response_parser":
+            parser_package = self._normalize_response_parser_package(payload.get("parser_package"))
+            item["category"] = str(payload.get("category") or self.DEFAULT_PARSER_CATEGORY).strip() or self.DEFAULT_PARSER_CATEGORY
+            item["site_domain"] = ""
+            item["domain"] = ""
+            item["preset_name"] = ""
+            item["min_app_version"] = self.RESPONSE_PARSER_MIN_VERSION
+            item["parser_id"] = parser_package["parser_id"]
+            item["parser_class_name"] = parser_package["class_name"]
+            item["parser_module_name"] = parser_package["module_name"]
+            item["parser_package"] = parser_package
             return item
 
         site_domain = str(payload.get("site_domain") or payload.get("domain") or "").strip()
