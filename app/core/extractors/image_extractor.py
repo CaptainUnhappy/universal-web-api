@@ -30,6 +30,7 @@ def get_default_image_extraction_config() -> Dict:
         "wait_for_load": True,
         "load_timeout_seconds": 5.0,
         "download_blobs": True,
+        "download_urls": False,
         "max_size_mb": 10,
         "mode": "all"
     }
@@ -407,6 +408,7 @@ class ImageExtractor:
         for i, img in enumerate(raw_images):
             src = img.get("src", "")
             data_uri = img.get("data_uri")
+            mime = img.get("mime")
             
             # 确定 kind 和去重键
             if data_uri:
@@ -424,6 +426,16 @@ class ImageExtractor:
             if key in seen_keys:
                 logger.debug(f" 跳过重复: {key[:50]}...")
                 continue
+
+            normalized_data_uri = str(data_uri or src or "").strip()
+            if kind == "data_uri":
+                lower_data_uri = normalized_data_uri.lower()
+                if lower_data_uri.startswith("data:image/svg+xml"):
+                    logger.debug(" 跳过 SVG 占位图 data URI")
+                    continue
+                if not mime and lower_data_uri.startswith("data:image/"):
+                    mime = lower_data_uri.split(";", 1)[0].split(":", 1)[1]
+
             seen_keys.add(key)
             
             # 检测来源类型
@@ -436,7 +448,7 @@ class ImageExtractor:
                 "kind": kind,
                 "url": src if kind == "url" else None,
                 "data_uri": data_uri if kind == "data_uri" else None,
-                "mime": img.get("mime"),
+                "mime": mime,
                 "byte_size": img.get("byte_size"),
                 "alt": img.get("alt"),
                 "width": img.get("width"),

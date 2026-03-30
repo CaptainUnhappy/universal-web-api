@@ -207,6 +207,7 @@ class ImageExtractionConfig(TypedDict, total=False):
     wait_for_load: bool              # 是否等待图片加载完成
     load_timeout_seconds: float      # 等待加载的超时时间
     download_blobs: bool             # 是否下载 blob 转 data_uri
+    download_urls: bool              # 是否将 http(s) 图片也下载到本地
     max_size_mb: int                 # blob 最大允许大小(MB)
     mode: Literal["all", "first", "last"]  # 提取模式
 # ================= 流式监控配置 =================
@@ -502,6 +503,7 @@ def get_default_image_extraction_config() -> ImageExtractionConfig:
         "wait_for_load": True,
         "load_timeout_seconds": 5.0,
         "download_blobs": True,
+        "download_urls": False,
         "max_size_mb": 10,
         "mode": "all"
     }

@@ -1308,6 +1308,9 @@ class ConfigEngine:
         
         if "download_blobs" in config:
             result["download_blobs"] = bool(config["download_blobs"])
+
+        if "download_urls" in config:
+            result["download_urls"] = bool(config["download_urls"])
         
         if "max_size_mb" in config:
             try:

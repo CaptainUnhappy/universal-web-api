@@ -656,15 +656,16 @@
         ],
         "stealth": false,
         "image_extraction": {
-          "enabled": false,
+          "enabled": true,
           "selector": "img",
           "container_selector": ".image-box-grid-EYaIcP img.image-Q7dBqW",
-          "debounce_seconds": 2,
+          "debounce_seconds": 5,
           "wait_for_load": true,
           "load_timeout_seconds": 60,
           "download_blobs": true,
           "max_size_mb": 10,
-          "mode": "all"
+          "mode": "all",
+          "download_urls": true
         },
         "file_paste": {
           "enabled": true,
@@ -672,7 +673,7 @@
           "hint_text": "完全专注于文件内容"
         },
         "stream_config": {
-          "mode": "network",
+          "mode": "dom",
           "hard_timeout": 300,
           "silence_threshold": 2.5,
           "initial_wait": 30,

@@ -1435,11 +1435,12 @@ class BrowserCore:
                             )
                             break
             
-            # 🆕 如果图片是不可直连的外链（如 googleusercontent），尝试截图落盘并替换为本地 URL
-            try:
-                images = self._try_screenshot_images_to_local(tab, last_element, images, image_config)
-            except Exception as e:
-                logger.warning(f"截图落盘失败（已忽略）: {e}")
+            # 对已启用 download_urls 的站点，统一交给批量下载逻辑处理，避免首图被旧分支误替换。
+            if not bool((image_config or {}).get("download_urls", False)):
+                try:
+                    images = self._try_screenshot_images_to_local(tab, last_element, images, image_config)
+                except Exception as e:
+                    logger.warning(f"截图落盘失败（已忽略）: {e}")
 
             try:
                 images = self._persist_data_uri_images_to_local(images)
@@ -1495,7 +1496,24 @@ class BrowserCore:
                 logger.warning(f"图片定位：未找到元素 (selector: {selector})")
                 return images
 
-            img_ele = img_eles[-1]
+            img_ele = None
+            for candidate in img_eles:
+                try:
+                    candidate_src = str(
+                        candidate.run_js("return this.currentSrc || this.src || '';")
+                        or candidate.attr("src")
+                        or candidate.link
+                        or ""
+                    ).strip()
+                except Exception:
+                    candidate_src = ""
+                if candidate_src == url0:
+                    img_ele = candidate
+                    break
+
+            if img_ele is None:
+                logger.debug("图片定位：未匹配到首张图片对应的 DOM 节点，跳过首图落盘")
+                return images
         except Exception as e:
             logger.warning(f"图片定位失败: {e}")
             return images
@@ -1718,53 +1736,157 @@ class BrowserCore:
 
     def _download_url_images(self, images: List[Dict], tab=None) -> List[Dict]:
         """
-        在浏览器内通过 Canvas 压缩图片，保存到本地并返回可访问 URL
-        
-        流程：
-        1. 浏览器 Canvas 压缩 → base64
-        2. 后端解码 → 保存到 download_images/
-        3. 返回 /download_images/xxx.jpg URL
+        将 http(s) 图片尽量保存到本地并返回 /download_images/ URL。
+
+        优先使用后端 HTTP 直连下载，避免浏览器 Canvas 的跨域限制。
+        如直连失败，再回退到浏览器内截图/Canvas。
         """
         import base64
+        import mimetypes
         import uuid
         from pathlib import Path
         from datetime import datetime
+        from urllib.parse import urlparse
+        import requests
         
         result = []
         
         # 确保目录存在
         save_dir = Path("download_images")
         save_dir.mkdir(exist_ok=True)
+
+        cookies_dict = {}
+        referer = ""
+        if tab:
+            referer = str(getattr(tab, "url", "") or "").strip()
+            try:
+                cookies_list = tab.cookies()
+                if cookies_list:
+                    for cookie in cookies_list:
+                        if isinstance(cookie, dict) and cookie.get("name") and "value" in cookie:
+                            cookies_dict[cookie["name"]] = cookie["value"]
+            except Exception as e:
+                logger.debug(f"读取浏览器 cookies 失败，继续无 cookies 下载: {e}")
+
+        def _safe_ext_from_mime_or_url(mime: str, image_url: str) -> str:
+            normalized_mime = str(mime or "").split(";", 1)[0].strip().lower()
+            ext = mimetypes.guess_extension(normalized_mime) or ""
+            if ext == ".jpe":
+                ext = ".jpg"
+            if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg"}:
+                return ext
+
+            parsed = urlparse(str(image_url or ""))
+            guessed = Path(parsed.path).suffix.lower()
+            if guessed in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg"}:
+                return guessed
+            return ".jpg"
+
+        def _persist_local_image(original: Dict, image_bytes: bytes, mime: str, width=None, height=None) -> Dict:
+            ext = _safe_ext_from_mime_or_url(mime, original.get("url"))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            filename = f"{timestamp}_{unique_id}{ext}"
+            filepath = save_dir / filename
+            filepath.write_bytes(image_bytes)
+
+            new_img = original.copy()
+            new_img["kind"] = "url"
+            new_img["url"] = f"/download_images/{filename}"
+            new_img["data_uri"] = None
+            new_img["mime"] = str(mime or "").split(";", 1)[0].strip().lower() or None
+            if width is not None:
+                new_img["width"] = width
+            if height is not None:
+                new_img["height"] = height
+            new_img["byte_size"] = len(image_bytes)
+            new_img["source"] = "local_file"
+            new_img["local_path"] = str(filepath)
+            return new_img
         
         for img in images:
-            if img.get('kind') != 'url':
+            if img.get("kind") != "url":
                 result.append(img)
                 continue
             
-            url = img.get('url')
+            url = str(img.get("url") or "").strip()
             if not url:
                 result.append(img)
                 continue
-            
-            if not tab:
+
+            if url.startswith("/download_images/"):
+                result.append(img)
+                continue
+
+            if not url.startswith(("http://", "https://")):
                 result.append(img)
                 continue
             
             try:
-                # 🔑 在浏览器中用 Canvas 加载并压缩图片
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                }
+                if referer:
+                    headers["Referer"] = referer
+
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    cookies=cookies_dict,
+                    timeout=20,
+                    allow_redirects=True,
+                )
+                content_type = str(response.headers.get("Content-Type", "") or "").lower()
+                if response.status_code == 200 and response.content and "image" in content_type:
+                    new_img = _persist_local_image(
+                        img,
+                        response.content,
+                        content_type,
+                        width=img.get("width"),
+                        height=img.get("height"),
+                    )
+                    result.append(new_img)
+                    logger.info(
+                        f"✅ 图片已下载: {Path(new_img['local_path']).name} "
+                        f"({new_img['byte_size']} bytes)"
+                    )
+                    continue
+
+                logger.debug(
+                    f"直连下载失败，准备回退浏览器方式: "
+                    f"status={response.status_code}, content_type={content_type or 'unknown'}"
+                )
+            except Exception as e:
+                logger.debug(f"直连下载异常，准备回退浏览器方式: {str(e)[:120]}")
+
+            if not tab:
+                result.append(img)
+                continue
+
+            try:
                 js_code = """
                 (async function(imageUrl) {
                     return new Promise((resolve) => {
                         const img = new Image();
+                        let done = false;
                         img.crossOrigin = 'anonymous';
-                        
+
+                        const finish = (payload) => {
+                            if (done) return;
+                            done = true;
+                            resolve(payload);
+                        };
+
                         img.onload = function() {
                             try {
-                                // 限制最大尺寸
                                 const MAX_SIZE = 1024;
                                 let width = img.naturalWidth;
                                 let height = img.naturalHeight;
-                                
+
                                 if (width > MAX_SIZE || height > MAX_SIZE) {
                                     if (width > height) {
                                         height = Math.round(height * MAX_SIZE / width);
@@ -1774,157 +1896,62 @@ class BrowserCore:
                                         height = MAX_SIZE;
                                     }
                                 }
-                                
+
                                 const canvas = document.createElement('canvas');
                                 canvas.width = width;
                                 canvas.height = height;
-                                
+
                                 const ctx = canvas.getContext('2d');
                                 ctx.drawImage(img, 0, 0, width, height);
-                                
-                                // 转为 JPEG
-                                const dataUri = canvas.toDataURL('image/jpeg', 0.85);
-                                
-                                resolve({
+
+                                finish({
                                     success: true,
-                                    dataUri: dataUri,
+                                    dataUri: canvas.toDataURL('image/jpeg', 0.85),
                                     width: width,
                                     height: height
                                 });
                             } catch (e) {
-                                resolve({ success: false, error: 'Canvas: ' + e.message });
+                                finish({ success: false, error: 'Canvas: ' + e.message });
                             }
                         };
-                        
+
                         img.onerror = function() {
-                            resolve({ success: false, error: 'Load failed' });
+                            finish({ success: false, error: 'Load failed' });
                         };
-                        
-                        setTimeout(() => resolve({ success: false, error: 'Timeout' }), 15000);
+
+                        setTimeout(() => finish({ success: false, error: 'Timeout' }), 15000);
                         img.src = imageUrl;
                     });
                 })(arguments[0]);
                 """
-                
-                # ===== PROBE: 验证 run_js 是否等待 Promise，并检查图片/Fetch 可用性 =====
-                probe_js = """
-                (function(u){
-                    try {
-                        // 1) 最小同步返回测试
-                        const sync_ok = { ok: true, type: typeof u, head: String(u).slice(0, 40) };
-
-                        // 2) Promise 返回测试（不返回大对象）
-                        const promise_test = Promise.resolve({ promise_ok: true });
-
-                        // 3) 图片加载测试（不画 canvas，不导 dataUri，避免大返回）
-                        const img_test = new Promise((resolve) => {
-                            const img = new Image();
-                            let done = false;
-
-                            img.onload = () => {
-                                if (done) return;
-                                done = true;
-                                resolve({ img_onload: true, w: img.naturalWidth, h: img.naturalHeight });
-                            };
-                            img.onerror = () => {
-                                if (done) return;
-                                done = true;
-                                resolve({ img_onerror: true });
-                            };
-
-                            setTimeout(() => {
-                                if (done) return;
-                                done = true;
-                                resolve({ img_timeout: true });
-                            }, 6000);
-
-                            img.src = u;
-                        });
-
-                        // 4) fetch 测试（只返回 status，不读 body）
-                        const fetch_test = (async () => {
-                            try {
-                                const r = await fetch(u, { method: 'GET' });
-                                return { fetch_ok: true, status: r.status, redirected: r.redirected };
-                            } catch (e) {
-                                return { fetch_error: String(e).slice(0, 120) };
-                            }
-                        })();
-
-                        // 关键：返回一个对象，包含同步字段 + Promise 字段
-                        // 如果 run_js 不等待 Promise，你只能拿到一个“未解析”的东西或 None
-                        return Promise.all([promise_test, img_test, fetch_test]).then(all => {
-                            return {
-                                sync: sync_ok,
-                                promise: all[0],
-                                img: all[1],
-                                fetch: all[2]
-                            };
-                        });
-                    } catch(e) {
-                        return { probe_exception: String(e).slice(0, 160) };
-                    }
-                })(arguments[0]);
-                """
-
-                probe_result = tab.run_js(probe_js, url)
-                logger.info(f"[PROBE_JS] probe_result_type={type(probe_result).__name__}, value={str(probe_result)[:500]}")
 
                 download_result = tab.run_js(js_code, url)
-
-                logger.info(f"[PROBE_JS] canvas_result_type={type(download_result).__name__}, value={str(download_result)[:300]}")                
-                if download_result and download_result.get('success'):
-                    data_uri = download_result['dataUri']
-                    
-                    # 解析 base64
-                    # 格式: data:image/jpeg;base64,/9j/4AAQSkZJRg...
-                    if ',' in data_uri:
-                        header, b64_data = data_uri.split(',', 1)
-                        mime = 'image/jpeg'
-                        if 'png' in header:
-                            mime = 'image/png'
-                            ext = '.png'
-                        else:
-                            ext = '.jpg'
-                        
-                        # 解码并保存
+                if download_result and download_result.get("success"):
+                    data_uri = str(download_result.get("dataUri") or "")
+                    if "," in data_uri:
+                        header, b64_data = data_uri.split(",", 1)
+                        mime = "image/png" if "png" in header.lower() else "image/jpeg"
                         image_bytes = base64.b64decode(b64_data)
-                        
-                        # 生成唯一文件名
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        unique_id = uuid.uuid4().hex[:8]
-                        filename = f"{timestamp}_{unique_id}{ext}"
-                        filepath = save_dir / filename
-                        
-                        # 写入文件
-                        with open(filepath, 'wb') as f:
-                            f.write(image_bytes)
-                        
-                        # 构建可访问的 URL
-                        accessible_url = f"/download_images/{filename}"
-                        
-                        new_img = img.copy()
-                        new_img['kind'] = 'url'
-                        new_img['url'] = accessible_url
-                        new_img['data_uri'] = None
-                        new_img['mime'] = mime
-                        new_img['width'] = download_result['width']
-                        new_img['height'] = download_result['height']
-                        new_img['byte_size'] = len(image_bytes)
-                        new_img['source'] = 'local_file'
-                        new_img['local_path'] = str(filepath)
-                        
+                        new_img = _persist_local_image(
+                            img,
+                            image_bytes,
+                            mime,
+                            width=download_result.get("width"),
+                            height=download_result.get("height"),
+                        )
                         result.append(new_img)
-                        logger.info(f"✅ 图片已保存: {filename} ({len(image_bytes)} bytes)")
+                        logger.info(
+                            f"✅ Canvas 回退保存成功: {Path(new_img['local_path']).name} "
+                            f"({new_img['byte_size']} bytes)"
+                        )
                         continue
-                
-                error_msg = download_result.get('error', 'Unknown') if download_result else 'No result'
-                logger.warning(f"⚠️ 图片处理失败: {error_msg}")
+
+                error_msg = download_result.get("error", "Unknown") if download_result else "No result"
+                logger.warning(f"⚠️ 图片处理失败，保留原始 URL: {error_msg}")
             
             except Exception as e:
                 logger.warning(f"⚠️ 图片保存异常: {str(e)[:100]}")
             
-            # 失败时保留原 URL
             result.append(img)
         
         return result
