@@ -1987,19 +1987,42 @@ class BrowserCore:
         return {"initialized": False}
     
     def close(self):
-        """关闭浏览器连接"""
+        """优雅关闭受控浏览器并释放本地连接状态"""
         logger.info("关闭浏览器连接")
-        
+
+        page = self.page
+
         if self._tab_pool:
             self._tab_pool.shutdown()
             self._tab_pool = None
-        
+
+        if page is not None:
+            try:
+                logger.info("尝试优雅关闭受控浏览器...")
+                page.quit(timeout=5, force=False, del_data=False)
+                logger.info("受控浏览器已优雅关闭")
+            except Exception as e:
+                logger.warning(f"优雅关闭受控浏览器失败，尝试强制关闭: {e}")
+                try:
+                    page.quit(timeout=5, force=True, del_data=False)
+                    logger.info("受控浏览器已强制关闭")
+                except Exception as force_error:
+                    logger.warning(f"强制关闭受控浏览器失败: {force_error}")
+                    try:
+                        page.disconnect()
+                    except Exception:
+                        pass
+
         self._connected = False
         self.page = None
-        
+
         with self._lock:
             BrowserCore._instance = None
             self._initialized = False
+
+    def quit(self):
+        """兼容旧调用，等同于 close()."""
+        self.close()
 
 
 # ================= 工厂函数 =================

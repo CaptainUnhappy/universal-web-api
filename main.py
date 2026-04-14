@@ -354,6 +354,11 @@ async def lifespan(app: FastAPI):
 
     logger.info("服务正在关闭...")
     try:
+        from app.services.command_engine import command_engine
+        command_engine.shutdown()
+    except Exception as e:
+        logger.debug(f"关闭命令调度器: {e}")
+    try:
         browser = get_browser(auto_connect=False)
         browser.close()
     except Exception as e:

@@ -565,6 +565,8 @@ return (function() {
         thread = self._periodic_thread
         if thread and thread.is_alive():
             thread.join(timeout=1.0)
+        self._periodic_thread = None
+        self._browser = None
 
     def _periodic_loop(self):
         while not self._periodic_stop_event.wait(1.0):

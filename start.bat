@@ -482,6 +482,7 @@ if "!DEBUG_PORT_OK!"=="1" (
     echo [WARN] If background tabs are slow, close browser and restart this script.
     echo [WARN] Restart lets script launch browser with anti-throttle flags.
     echo [OK] Debug port ready - !BROWSER_PORT!
+    call :minimize_debug_browser_window
     goto :BROWSER_READY
 )
 
@@ -568,7 +569,7 @@ if /I "!PROXY_ENABLED!"=="true" (
 )
 
 REM 启动浏览器（同时打开 doubao 和 gemini）
-start "" "!BROWSER_EXE!" !BROWSER_ARGS! --new-window "https://www.doubao.com" "https://gemini.google.com"
+start "" "!BROWSER_EXE!" !BROWSER_ARGS! --new-window "https://www.doubao.com" "https://www.doubao.com" "https://gemini.google.com"
 
 echo [INFO] 等待 !BROWSER_NAME! 就绪...
 set "WAIT_COUNT=0"
@@ -583,6 +584,7 @@ goto :WAIT_LOOP
 :WAIT_DONE
 if "!DEBUG_PORT_OK!"=="1" (
     echo [OK] !BROWSER_NAME! 启动成功 - 端口 !BROWSER_PORT!
+    call :minimize_debug_browser_window
 ) else (
     echo [WARN] !BROWSER_NAME! 启动超时
     echo [ERROR] 未检测到远程调试端口 !BROWSER_PORT!，为避免服务误连到错误的浏览器，本次启动已中止
@@ -638,8 +640,7 @@ if !EXIT_CODE! equ 0 (
     REM 正常退出（用户按 Ctrl+C）
     echo.
     echo [INFO] 服务已停止
-    pause
-    exit /b 0
+    exit
 )
 
 if !EXIT_CODE! equ 3 (
@@ -667,6 +668,15 @@ REM ===============================
 set "DEBUG_PORT_OK=0"
 powershell -NoProfile -Command "try { $c = New-Object System.Net.Sockets.TcpClient; $c.Connect('127.0.0.1', %BROWSER_PORT%); $c.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
 if !errorlevel! equ 0 set "DEBUG_PORT_OK=1"
+goto :eof
+
+:minimize_debug_browser_window
+powershell -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Win32 { [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow); }'; $deadline=(Get-Date).AddSeconds(8); do { $conn = Get-NetTCPConnection -LocalPort %BROWSER_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { try { $proc = Get-Process -Id $conn.OwningProcess -ErrorAction Stop; if ($proc.MainWindowHandle -ne 0) { [Win32]::ShowWindowAsync($proc.MainWindowHandle, 6) | Out-Null; exit 0 } } catch {} } Start-Sleep -Milliseconds 300 } while ((Get-Date) -lt $deadline); exit 1" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [INFO] 已请求最小化受控浏览器窗口
+) else (
+    echo [WARN] 未能自动最小化受控浏览器窗口
+)
 goto :eof
 
 :SetEnvVar
@@ -729,6 +739,10 @@ goto :eof
 REM 参数: %~1=路径, %~2=浏览器名称
 if exist "%~1" (
     set "BROWSER_EXE=%~1"
+    set "BROWSER_NAME=%~2"
+)
+goto :eof
+EXE=%~1"
     set "BROWSER_NAME=%~2"
 )
 goto :eof

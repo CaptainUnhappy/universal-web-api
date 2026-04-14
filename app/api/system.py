@@ -569,6 +569,42 @@ async def save_update_preserve(
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
 
+@router.post("/api/system/shutdown")
+async def shutdown_service(authenticated: bool = Depends(verify_auth)):
+    """关闭服务"""
+    logger.warning("收到关闭指令，服务即将退出...")
+
+    try:
+        from app.services.command_engine import command_engine
+        command_engine.shutdown()
+    except Exception as e:
+        logger.warning(f"停止命令调度器失败: {e}")
+
+    # 尝试关闭浏览器
+    try:
+        browser = get_browser(auto_connect=False)
+        if browser:
+            browser.close()
+    except Exception as e:
+        logger.warning(f"关闭受控浏览器失败: {e}")
+        try:
+            browser = get_browser(auto_connect=False)
+            page = getattr(browser, "page", None) if browser else None
+            if page is not None:
+                logger.warning("尝试使用旧方法强制关闭受控浏览器...")
+                page.quit(timeout=5, force=True, del_data=False)
+        except Exception as fallback_error:
+            logger.warning(f"旧方法关闭受控浏览器也失败: {fallback_error}")
+
+    async def trigger_shutdown():
+        await asyncio.sleep(0.5)
+        import os
+        os._exit(0)
+
+    asyncio.create_task(trigger_shutdown())
+    return {"status": "success", "message": "服务正在关闭..."}
+
+
 # ================= 调试 API =================
 
 @router.post("/api/debug/test-selector")

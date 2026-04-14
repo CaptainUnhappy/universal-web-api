@@ -26,7 +26,7 @@ DATA_FILE = AUTO_DESCRIBE_DIR / "data.json"
 PROMPT_FILE = AUTO_DESCRIBE_DIR / "prompt.md"
 
 # 不同模型使用不同的tab URL
-DOUBAO_API_URL = "http://127.0.0.1:8199/tab/1/v1/chat/completions"  # 豆包
+DOUBAO_API_URL = "http://127.0.0.1:8199/tab/3/v1/chat/completions"  # 豆包
 GEMINI_API_URL = "http://127.0.0.1:8199/tab/2/v1/chat/completions"  # Gemini
 
 # 豆包模型（用于图片描述）
@@ -400,12 +400,16 @@ def main():
 
     # 主线程等待用户输入
     try:
-        while True:
-            cmd = input().strip().lower()
-            if cmd == "stop":
-                print("[停止] 正在停止...")
-                loop.stop()
-                break
+        if "--auto" in sys.argv:
+            while True:
+                time.sleep(1)
+        else:
+            while True:
+                cmd = input().strip().lower()
+                if cmd == "stop":
+                    print("[停止] 正在停止...")
+                    loop.stop()
+                    break
     except KeyboardInterrupt:
         print("\n[退出] 用户中断，程序结束")
         loop.stop()
