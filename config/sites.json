@@ -686,6 +686,84 @@
             "response_interval": 0.5
           }
         }
+      },
+      "doubao_3/31": {
+        "selectors": {
+          "input_box": "textarea[data-testid=\"chat_input_input\"], textarea[placeholder], textarea",
+          "send_btn": "#flow-end-msg-send",
+          "result_container": "div[data-foundation-type=\"receive-message-action-bar\"]",
+          "new_chat_btn": "#flow_chat_sidebar > div:nth-child(2)"
+        },
+        "workflow": [
+          {
+            "action": "CLICK",
+            "target": "new_chat_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "WAIT",
+            "target": "",
+            "optional": false,
+            "value": "0.5"
+          },
+          {
+            "action": "FILL_INPUT",
+            "target": "input_box",
+            "optional": false,
+            "value": null
+          },
+          {
+            "action": "CLICK",
+            "target": "send_btn",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "KEY_PRESS",
+            "target": "Enter",
+            "optional": true,
+            "value": null
+          },
+          {
+            "action": "STREAM_WAIT",
+            "target": "result_container",
+            "optional": false,
+            "value": null
+          }
+        ],
+        "stealth": false,
+        "image_extraction": {
+          "enabled": true,
+          "selector": "img",
+          "container_selector": ".image-box-grid-EYaIcP img.image-Q7dBqW",
+          "debounce_seconds": 2,
+          "wait_for_load": true,
+          "load_timeout_seconds": 60,
+          "download_blobs": true,
+          "download_urls": false,
+          "max_size_mb": 10,
+          "mode": "all"
+        },
+        "file_paste": {
+          "enabled": true,
+          "threshold": 50000,
+          "hint_text": "完全专注于文件内容"
+        },
+        "stream_config": {
+          "mode": "network",
+          "hard_timeout": 300,
+          "silence_threshold": 2.5,
+          "initial_wait": 30,
+          "enable_wrapper_search": true,
+          "network": {
+            "listen_pattern": "chat/completion",
+            "parser": "doubao",
+            "first_response_timeout": 300,
+            "silence_threshold": 3,
+            "response_interval": 0.5
+          }
+        }
       }
     },
     "default_preset": "主预设"

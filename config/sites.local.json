@@ -1,3 +1,5 @@
 {
-  "default_presets": {}
+  "default_presets": {
+    "www.doubao.com": "doubao_3/31"
+  }
 }
