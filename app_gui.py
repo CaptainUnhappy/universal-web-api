@@ -32,7 +32,7 @@ SHUTDOWN_URL = "http://127.0.0.1:8199/api/system/shutdown"
 class UniversalWebAPIApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Universal Web-API 集成控制面板")
+        self.root.title("集成控制面板")
         self.root.geometry("900x750")
         
         # 绑定关闭事件
@@ -116,7 +116,7 @@ class UniversalWebAPIApp:
         self.main_container.pack(fill=tk.BOTH, expand=True)
 
         # 顶部标题
-        header = ttk.Label(self.main_container, text="✨ Universal Web-API 集成控制中心", style="Header.TLabel")
+        header = ttk.Label(self.main_container, text="✨ 集成控制中心", style="Header.TLabel")
         header.pack(pady=(0, 10))
 
         # 选项卡控件
