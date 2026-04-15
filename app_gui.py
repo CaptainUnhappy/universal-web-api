@@ -100,6 +100,18 @@ class UniversalWebAPIApp:
             p.mkdir(parents=True, exist_ok=True)
         os.startfile(str(p.absolute()))
 
+    def open_prompt_file(self, path):
+        """打开提示词文件，不存在时自动创建空文件。"""
+        prompt_path = Path(path)
+        try:
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            if not prompt_path.exists():
+                prompt_path.write_text("", encoding="utf-8")
+            os.startfile(str(prompt_path.absolute()))
+        except Exception as e:
+            self.log(f"[GUI] 打开提示词失败: {e}", is_error=True)
+            messagebox.showerror("打开失败", f"无法打开提示词文件:\n{prompt_path}\n\n{e}")
+
     def setup_styles(self):
         style = ttk.Style()
         # 使用 Tkinter 兼容的字符串格式，避免解析错误
@@ -181,8 +193,7 @@ class UniversalWebAPIApp:
         self.btn_m1_start = ttk.Button(top_controls, text="▶ 启动定时提交", command=self.toggle_mode1)
         self.btn_m1_start.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.btn_m1_refresh = ttk.Button(top_controls, text="刷新列表", command=self.refresh_m1_images, width=10)
-        self.btn_m1_refresh.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(top_controls, text="📝 打开提示词", command=lambda: self.open_prompt_file(MODE1_PROMPT_FILE), width=12).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(top_controls, text="📁 打开文件夹", command=lambda: self.open_folder(IMAGE_DIR), width=12).pack(side=tk.LEFT)
 
         self.m1_status_var = tk.StringVar(value="就绪")
@@ -194,6 +205,8 @@ class UniversalWebAPIApp:
         img_header = ttk.Frame(list_panel)
         img_header.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(img_header, text="勾选后参与轮询").pack(side=tk.LEFT, anchor=tk.W)
+        self.btn_m1_refresh = ttk.Button(img_header, text="刷新列表", width=10, command=self.refresh_m1_images)
+        self.btn_m1_refresh.pack(side=tk.RIGHT, padx=(0, 6))
         self.btn_m1_select_all = ttk.Button(img_header, text="全选", width=6, command=self.select_all_m1_images)
         self.btn_m1_select_all.pack(side=tk.RIGHT)
 
@@ -478,7 +491,8 @@ class UniversalWebAPIApp:
 
         self.btn_m2_start = ttk.Button(top_bar, text="▶ 启动自动检测", command=self.toggle_mode2)
         self.btn_m2_start.pack(side=tk.LEFT, padx=10)
-        
+
+        ttk.Button(top_bar, text="📝 打开提示词", command=lambda: self.open_prompt_file(MODE2_PROMPT_FILE)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(top_bar, text="📁 打开文件夹", command=lambda: self.open_folder(AUTO_DESCRIBE_DIR)).pack(side=tk.LEFT)
 
         # 状态列表

@@ -741,9 +741,9 @@
           "wait_for_load": true,
           "load_timeout_seconds": 60,
           "download_blobs": true,
-          "download_urls": false,
           "max_size_mb": 10,
-          "mode": "all"
+          "mode": "all",
+          "download_urls": true
         },
         "file_paste": {
           "enabled": true,
